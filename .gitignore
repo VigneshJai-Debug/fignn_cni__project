@@ -1,0 +1,68 @@
+# ── Virtual Environment ──────────────────────────────────────────────
+fignn_env/
+venv/
+.venv/
+env/
+
+# ── Python ───────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# ── Jupyter ──────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# ── Data (never commit raw EEG data) ─────────────────────────────────
+data/
+*.bdf
+*.edf
+*.fif
+*.set
+*.cnt
+*.vhdr
+*.vmrk
+*.eeg
+*.mat
+*.hdf5
+*.h5
+
+# ── Model Outputs ─────────────────────────────────────────────────────
+outputs/checkpoints/
+outputs/weights/
+*.pth
+*.pt
+*.ckpt
+
+# ── Logs ─────────────────────────────────────────────────────────────
+logs/
+*.log
+runs/
+wandb/
+lightning_logs/
+
+# ── OS Junk ──────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── IDE ───────────────────────────────────────────────────────────────
+.vscode/settings.json
+.idea/
+*.suo
+*.user
+
+# ── Environment Variables (never commit secrets) ──────────────────────
+.env
+.env.local
+
+# ── Pytest / Coverage ─────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
