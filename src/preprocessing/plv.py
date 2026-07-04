@@ -1,0 +1,97 @@
+"""
+plv.py
+------
+Computes Phase Locking Value (PLV) matrices from epoched EEG.
+
+What PLV is:
+  For two channels i and j, PLV measures how consistently their
+  instantaneous phases stay locked together over the epoch window.
+  PLV = 1 → always in sync. PLV = 0 → completely random phase relation.
+
+How we get instantaneous phase:
+  Hilbert transform converts a real signal x(t) into a complex
+  analytic signal. The angle of that complex number at each time
+  point is the instantaneous phase φ(t).
+
+Why 4 bands separately:
+  Synchrony in theta (4-8 Hz) means something different from
+  synchrony in beta (13-30 Hz). Keeping bands separate lets the
+  GAT + band-weight layer learn which band matters most for load.
+"""
+
+import numpy as np
+from scipy.signal import hilbert
+
+
+def compute_plv_matrix(epoch: np.ndarray) -> np.ndarray:
+    """
+    Compute PLV between every pair of channels for one epoch.
+
+    Args:
+        epoch : (n_channels, n_timepoints)  — already bandpass filtered
+
+    Returns:
+        plv   : (n_channels, n_channels)    — symmetric, values in [0, 1]
+    """
+    n_ch = epoch.shape[0]
+
+    # Hilbert transform → analytic signal → extract phase
+    analytic = hilbert(epoch, axis=1)          # (n_ch, n_times) complex
+    phase    = np.angle(analytic)              # (n_ch, n_times) real, in [-π, π]
+
+    plv = np.zeros((n_ch, n_ch), dtype=np.float32)
+
+    for i in range(n_ch):
+        for j in range(i + 1, n_ch):
+            # Phase difference at every timepoint
+            delta_phi = phase[i] - phase[j]
+
+            # PLV = magnitude of mean unit complex exponential
+            # If phases consistently differ by same amount → |mean| close to 1
+            # If phases differ randomly → vectors cancel → |mean| close to 0
+            plv_ij = np.abs(np.mean(np.exp(1j * delta_phi)))
+
+            plv[i, j] = plv_ij
+            plv[j, i] = plv_ij   # symmetric
+
+    np.fill_diagonal(plv, 1.0)   # channel perfectly in sync with itself
+    return plv
+
+
+def compute_all_band_plv(band_epoch_dict: dict, epoch_idx: int) -> dict:
+    """
+    Compute PLV matrices for one epoch across all 4 bands.
+
+    Args:
+        band_epoch_dict : { band: (n_epochs, n_ch, n_times) }
+        epoch_idx       : which epoch to compute PLV for
+
+    Returns:
+        { band: (n_ch, n_ch) PLV matrix }
+    """
+    return {
+        band: compute_plv_matrix(band_epoch_dict[band][epoch_idx])
+        for band in band_epoch_dict
+    }
+
+
+def batch_compute_plv(band_epoch_dict: dict, verbose: bool = True) -> list:
+    """
+    Compute PLV for every epoch across all bands.
+
+    Args:
+        band_epoch_dict : { band: (n_epochs, n_ch, n_times) }
+
+    Returns:
+        List of dicts, one per epoch:
+        [ { 'delta': (n_ch,n_ch), 'theta': ..., 'alpha': ..., 'beta': ... }, ... ]
+    """
+    n_epochs = band_epoch_dict["delta"].shape[0]
+    plv_list = []
+
+    for i in range(n_epochs):
+        if verbose and i % 20 == 0:
+            print(f"    PLV: epoch {i}/{n_epochs}")
+        plv_list.append(compute_all_band_plv(band_epoch_dict, i))
+
+    return plv_list   # length = n_epochs
