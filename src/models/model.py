@@ -78,18 +78,18 @@ class FIGNNEncoder(nn.Module):
     Hyperparameters explained:
       node_in_dim  : 4 — band power features per electrode
       edge_dim     : 4 — PLV values per band per edge
-      hidden_dim   : 64 — size of intermediate node representations
-      latent_dim   : 32 — size of z (the output embedding)
-      n_heads      : 4  — GAT attention heads in layer 1
+      hidden_dim   : 128 before 64 — size of intermediate node representations
+      latent_dim   : 64 before 32 — size of z (the output embedding)
+      n_heads      : 8 before 4  — GAT attention heads in layer 1
       dropout      : 0.3 — regularisation, prevents memorising subjects
     """
-
+    # Change FIGNNEncoder defaults:
     def __init__(self,
                  node_in_dim : int = 4,
                  edge_dim    : int = 4,
-                 hidden_dim  : int = 64,
-                 latent_dim  : int = 32,
-                 n_heads     : int = 4,
+                 hidden_dim  : int = 128,   # was 64
+                 latent_dim  : int = 64,    # was 32
+                 n_heads     : int = 8,     # was 4
                  dropout     : float = 0.3):
         super().__init__()
 
@@ -132,6 +132,8 @@ class FIGNNEncoder(nn.Module):
         edge_attr  = data.edge_attr   # (total_edges, 4)
         batch      = data.batch       # (total_nodes,) — which graph each node belongs to
 
+        edge_attr = edge_attr.clamp(0, 1)
+
         # Apply learnable band weights to edge features
         edge_attr = self.band_weight(edge_attr)
 
@@ -146,9 +148,8 @@ class FIGNNEncoder(nn.Module):
         x = self.norm2(x)
 
         # Pool: collapse all 62 node vectors per graph into one vector
-        z = global_mean_pool(x, batch)             # (batch_size, latent_dim)
-
-        return z
+        z = global_mean_pool(x, batch)
+        return F.normalize(z, p=2, dim=1)
 
     def get_band_importance(self) -> dict:
         return self.band_weight.get_weights()

@@ -29,7 +29,7 @@ import torch
 from torch_geometric.data import Data
 
 BANDS = ["delta", "theta", "alpha", "beta"]
-PLV_THRESHOLD = 0.3   # edges below this are dropped
+PLV_THRESHOLD = 0.5   # edges below this are dropped
 
 
 def compute_band_power(band_epoch_dict: dict, epoch_idx: int) -> np.ndarray:
