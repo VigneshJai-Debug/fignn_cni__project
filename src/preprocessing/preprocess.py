@@ -73,63 +73,86 @@ def bandpass_filter(raw: mne.io.Raw, band: str) -> np.ndarray:
     return raw_filt.get_data()   # shape: (n_ch, n_times)
 
 
-def epoch_signal(data: np.ndarray, sfreq: float) -> np.ndarray:
+def extract_trial_epochs(raw):
     """
-    Cut a continuous signal into fixed-length non-overlapping epochs.
-
-    Args:
-        data  : (n_channels, n_times)
-        sfreq : sampling frequency in Hz
-
-    Returns:
-        epochs : (n_epochs, n_channels, epoch_samples)
+    Extract epochs time-locked to N-back stimulus onset (code 6021).
+    The label comes from the filename (zeroBACK/oneBACK/twoBACK),
+    not from the event code.
+    
+    Returns: numpy array of shape (n_trials, n_ch, n_times)
     """
-    n_ch, n_times = data.shape
-    epoch_samples = int(EPOCH_DURATION * sfreq)
-    n_epochs = n_times // epoch_samples          # integer division, drops the tail
-
-    # Slice into epochs
-    epochs = np.stack(
-        [data[:, i * epoch_samples : (i + 1) * epoch_samples]
-         for i in range(n_epochs)],
-        axis=0
+    events, event_id = mne.events_from_annotations(raw)
+    
+    if '6021' not in event_id:
+        return None
+    
+    epochs = mne.Epochs(
+        raw,
+        events,
+        event_id={'6021': event_id['6021']},
+        tmin=0.0,
+        tmax=2.0,
+        baseline=None,
+        preload=True,
+        verbose=False
     )
-    return epochs  # (n_epochs, n_ch, epoch_samples)
+    return epochs.get_data()   # (n_trials, n_ch, n_times)
 
 
 def process_file(set_path: str, label: int) -> dict:
-    """
-    Full preprocessing pipeline for one .set file.
-
-    Returns a dict with:
-        'band_epochs' : { band_name: (n_epochs, n_ch, epoch_samples) }
-        'label'       : int (0 / 1 / 2 for zero/one/two back)
-        'n_epochs'    : int
-        'n_channels'  : int
-        'sfreq'       : float
-        'ch_names'    : list of str
-    """
     print(f"  Loading: {set_path.split('/')[-1]}  label={label}")
 
-    raw = load_and_clean(set_path)
-    sfreq = raw.info["sfreq"]
+    raw      = load_and_clean(set_path)
+    sfreq    = raw.info["sfreq"]
     ch_names = raw.ch_names
 
+    events, event_id = mne.events_from_annotations(raw)
+
+    # Stimulus code per condition — middle digit = N-back level
+    # zeroBACK→6021, oneBACK→6121, twoBACK→6221, RS_Beg_EC→use 6021 if present
+    STIMULUS_CODES = ['6021', '6121', '6221']
+    stim_code = None
+    for code in STIMULUS_CODES:
+        if code in event_id:
+            stim_code = code
+            break
+
+    if stim_code is None:
+        raise ValueError(f"No stimulus code found in {set_path}. Available: {list(event_id.keys())}")
+
+    epo = mne.Epochs(
+        raw, events,
+        event_id={stim_code: event_id[stim_code]},
+        tmin=0.0, tmax=2.0,
+        baseline=None,
+        preload=True,
+        verbose=False
+    )
+    trial_data = epo.get_data()   # (n_trials, n_ch, n_times)
+    n_trials   = trial_data.shape[0]
+
     band_epochs = {}
-    for band in FREQ_BANDS:
-        signal = bandpass_filter(raw, band)       # (n_ch, n_times)
-        epochs = epoch_signal(signal, sfreq)      # (n_epochs, n_ch, epoch_samples)
-        band_epochs[band] = epochs
+    for band, (lo, hi) in FREQ_BANDS.items():
+        # Filter continuous signal first
+        raw_filt = raw.copy().filter(l_freq=lo, h_freq=hi, 
+                                      fir_window='hamming', verbose=False)
+        # Then extract trial epochs from filtered signal
+        epo_filt = mne.Epochs(
+            raw_filt, events,
+            event_id={stim_code: event_id[stim_code]},
+            tmin=0.0, tmax=2.0,
+            baseline=None,
+            preload=True,
+            verbose=False
+        )
+        band_epochs[band] = epo_filt.get_data()   # (n_trials, n_ch, 1001)
 
-    # All bands have the same n_epochs — use delta to count
-    n_epochs = band_epochs["delta"].shape[0]
-
-    print(f"    → {len(ch_names)} channels  |  {n_epochs} epochs  |  {sfreq} Hz")
+    print(f"    → {len(ch_names)} ch  |  {n_trials} trials (code {stim_code})  |  {sfreq} Hz")
 
     return {
         "band_epochs": band_epochs,
         "label":       label,
-        "n_epochs":    n_epochs,
+        "n_epochs":    n_trials,
         "n_channels":  len(ch_names),
         "sfreq":       sfreq,
         "ch_names":    ch_names,

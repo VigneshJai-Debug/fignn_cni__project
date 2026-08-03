@@ -16,8 +16,11 @@ import os
 from sklearn.manifold import TSNE
 from sklearn.metrics import silhouette_score
 
-LABEL_NAMES  = {0: "zeroBACK (rest)", 1: "oneBACK (low)", 2: "twoBACK (high)", 3: "RS eyes closed"}
-LABEL_COLORS = {0: "#4CAF50", 1: "#FF9800", 2: "#F44336", 3: "#2196F3"}
+# LABEL_NAMES  = {0: "zeroBACK (rest)", 1: "oneBACK (low)", 2: "twoBACK (high)", 3: "RS eyes closed"}
+# LABEL_COLORS = {0: "#4CAF50", 1: "#FF9800", 2: "#F44336", 3: "#2196F3"}
+
+LABEL_NAMES  = {0: "zeroBACK (rest)", 1: "oneBACK (low)", 2: "twoBACK (high)"}
+LABEL_COLORS = {0: "#4CAF50", 1: "#FF9800", 2: "#F44336"}
 
 def plot_tsne(
     z,
@@ -124,6 +127,16 @@ def run_full_evaluation(model, graph_dataset, device, batch_size=32):
     sil = compute_silhouette(z, labels)
     plot_tsne(z, labels)
     bw = model.get_band_importance()
-    print(f"\nBand importances: {bw}")
-    plot_band_importance(bw)
+    print(f"PLV band weights:  {bw['plv']}")
+    print(f"Corr band weights: {bw['corr']}")
+    # plot both separately
+    plot_band_importance(
+        bw["plv"],
+        save_path="/lp-dev/24BCE1793/outputs/plots/band_importance_plv.png"
+    )
+    
+    plot_band_importance(
+        bw["corr"],
+        save_path="/lp-dev/24BCE1793/outputs/plots/band_importance_corr.png"
+    )
     return {"silhouette": sil, "band_weights": bw, "z": z, "labels": labels}

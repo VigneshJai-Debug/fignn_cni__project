@@ -8,6 +8,8 @@ print("Loading graphs...", flush=True)
 with open("/lp-dev/24BCE1793/data/processed/all_graphs_29sub.pkl", "rb") as f:
     all_graphs = pickle.load(f)
 print(f"Loaded {len(all_graphs)} graphs", flush=True)
+all_graphs = [g for g in all_graphs if g.y.item() != 3]
+print(f"After removing rest: {len(all_graphs)} graphs")
 
 from src.training.train import run_training
 from src.evaluation.evaluate import run_full_evaluation, plot_loss_curve

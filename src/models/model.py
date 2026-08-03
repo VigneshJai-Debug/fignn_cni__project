@@ -40,34 +40,31 @@ from torch_geometric.nn import GATConv, global_mean_pool
 
 
 class BandWeightLayer(nn.Module):
-    """
-    4 learnable scalars — one per frequency band.
-    Applied to edge attributes before graph convolution.
-
-    Why softmax: keeps weights positive and summing to 1,
-    so they're interpretable as "how much of the signal
-    comes from each band." After training, read these out
-    and report them — it's a result, not just a hyperparameter.
-    """
-
     def __init__(self, n_bands: int = 4):
         super().__init__()
-        # Init equal — model learns from data which band matters
-        self.raw_weights = nn.Parameter(torch.ones(n_bands))
+        self.plv_weights  = nn.Parameter(torch.ones(n_bands))
+        self.corr_weights = nn.Parameter(torch.ones(n_bands))
 
     def forward(self, edge_attr: torch.Tensor) -> torch.Tensor:
         """
-        edge_attr : (n_edges, 4)
-        Returns   : (n_edges, 4) — each band column scaled by its weight
+        edge_attr : (n_edges, 8) — first 4 PLV, last 4 correlation
         """
-        w = F.softmax(self.raw_weights, dim=0)   # (4,) summing to 1
-        return edge_attr * w                      # broadcast over edges
+        w_plv  = F.softmax(self.plv_weights,  dim=0)
+        w_corr = F.softmax(self.corr_weights, dim=0)
+        
+        plv_scaled  = edge_attr[:, :4] * w_plv
+        corr_scaled = edge_attr[:, 4:] * w_corr
+        
+        return torch.cat([plv_scaled, corr_scaled], dim=1)
 
     def get_weights(self) -> dict:
-        """Call after training to read band importance."""
-        w = F.softmax(self.raw_weights, dim=0).detach().cpu().numpy()
-        return {band: float(w[i])
-                for i, band in enumerate(["delta", "theta", "alpha", "beta"])}
+        w_plv  = F.softmax(self.plv_weights,  dim=0).detach().cpu().numpy()
+        w_corr = F.softmax(self.corr_weights, dim=0).detach().cpu().numpy()
+        bands  = ["delta", "theta", "alpha", "beta"]
+        return {
+            'plv':  {b: float(w_plv[i])  for i, b in enumerate(bands)},
+            'corr': {b: float(w_corr[i]) for i, b in enumerate(bands)},
+        }
 
 
 class FIGNNEncoder(nn.Module):
@@ -86,14 +83,14 @@ class FIGNNEncoder(nn.Module):
     # Change FIGNNEncoder defaults:
     def __init__(self,
                  node_in_dim : int = 4,
-                 edge_dim    : int = 4,
+                 edge_dim    : int = 8,
                  hidden_dim  : int = 128,   # was 64
                  latent_dim  : int = 64,    # was 32
                  n_heads     : int = 8,     # was 4
                  dropout     : float = 0.3):
         super().__init__()
 
-        self.band_weight = BandWeightLayer(n_bands=edge_dim)
+        self.band_weight = BandWeightLayer(n_bands=4)
 
         # GAT layer 1: node_in_dim → hidden_dim * n_heads
         # concat=True means n_heads outputs are concatenated
@@ -132,7 +129,7 @@ class FIGNNEncoder(nn.Module):
         edge_attr  = data.edge_attr   # (total_edges, 4)
         batch      = data.batch       # (total_nodes,) — which graph each node belongs to
 
-        edge_attr = edge_attr.clamp(0, 1)
+        
 
         # Apply learnable band weights to edge features
         edge_attr = self.band_weight(edge_attr)

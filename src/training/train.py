@@ -31,23 +31,19 @@ import os
 def compute_dataset_stats(graph_dataset):
     print("Computing dataset feature statistics...", flush=True)
     all_x = torch.cat([g.x for g in graph_dataset], dim=0)  # (N, 4)
-    
-    # Log transform — compresses skewed power distribution
-    all_x_log = torch.log(all_x + 1e-30)
-    
-    mean = all_x_log.mean(dim=0)
-    std  = all_x_log.std(dim=0).clamp(min=1e-15)
-    
-    print(f"  Log mean: {mean.tolist()}", flush=True)
-    print(f"  Log std:  {std.tolist()}", flush=True)
+    # Relative band power is already in [0,1] — just z-score normalise
+    # No log transform needed since values are already proportions
+    mean = all_x.mean(dim=0)   # (4,)
+    std  = all_x.std(dim=0).clamp(min=1e-8)   # (4,)
+    print(f"  Feature mean: {mean.tolist()}", flush=True)
+    print(f"  Feature std:  {std.tolist()}", flush=True)
     return mean, std
 
 
 def normalise_dataset(graph_dataset, mean, std):
-    print("Normalising node features (log + z-score)...", flush=True)
+    print("Normalising node features (z-score, no log)...", flush=True)
     for g in graph_dataset:
-        x_log = torch.log(g.x + 1e-30)
-        g.x   = (x_log - mean) / std
+        g.x = (g.x - mean) / std
     print("Done.", flush=True)
 
 
@@ -178,7 +174,7 @@ def run_training(graph_dataset: list,
     #     eta_min=1e-5
     # )
     
-    loss_fn = SupConLoss(temperature=0.5)
+    loss_fn = SupConLoss(temperature=0.1)
 
     # ── 5. Training loop ────────────────────────────────────────────────
     best_sil      = -999
