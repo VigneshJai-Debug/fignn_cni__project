@@ -71,10 +71,10 @@ def train_one_epoch(model, loader, optimizer, loss_fn, device):
         batch  = batch.to(device)
         optimizer.zero_grad()
 
-        z      = model(batch)
+        z = model(batch)
         labels = batch.y.squeeze()
 
-        loss   = loss_fn(z, labels)
+        loss = loss_fn(z, labels)
 
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -161,18 +161,16 @@ def run_training(graph_dataset: list,
     model     = FIGNNEncoder().to(device)
     count_parameters(model)
 
-    optimizer = torch.optim.Adam(
+    optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=lr,
-        weight_decay=1e-5
+        weight_decay=1e-4
+    )    
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, 
+        T_max=n_epochs,
+        eta_min=1e-5    # floor — don't decay to zero
     )
-    
-    # scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-    #     optimizer,
-    #     T_0=50,
-    #     T_mult=2,
-    #     eta_min=1e-5
-    # )
     
     loss_fn = SupConLoss(temperature=0.1)
 
@@ -183,7 +181,7 @@ def run_training(graph_dataset: list,
 
     for epoch in range(1, n_epochs + 1):
         train_loss = train_one_epoch(model, train_loader, optimizer, loss_fn, device)
-        # scheduler.step(epoch)
+        scheduler.step()
         train_history.append(train_loss)
 
         # Evaluate every 10 epochs — silhouette on 6k graphs is slow
@@ -199,7 +197,7 @@ def run_training(graph_dataset: list,
             print(f"Epoch {epoch:>3}/{n_epochs}  "
                   f"train_loss={train_loss:.4f}  "
                   f"val_silhouette={sil:.3f}  "
-                  f"lr={lr:.6f}", flush=True)
+                  f"lr={scheduler.get_last_lr()[0]:.6f}", flush=True)
 
             if sil > best_sil:
                 best_sil = sil
