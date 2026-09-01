@@ -66,3 +66,7 @@ desktop.ini
 .pytest_cache/
 .coverage
 htmlcov/
+
+# ── Archives / Large Result Packages ─────────────────────────────────
+*.tar.gz
+*.zip

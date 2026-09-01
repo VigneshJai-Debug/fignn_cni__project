@@ -105,7 +105,8 @@ def evaluate(model, loader, device):
     return np.vstack(all_z), np.concatenate(all_labels)
 
 
-def run_training(graph_dataset: list,
+def run_training(train_graphs: list,
+                 test_graphs: list = None,
                  save_dir  : str   = "outputs/checkpoints",
                  n_epochs  : int   = 100,
                  batch_size: int   = 64,
@@ -129,28 +130,61 @@ def run_training(graph_dataset: list,
     print(f"Device: {device}", flush=True)
 
     # ── 1. Normalise node features across full dataset ──────────────────
-    mean, std = compute_dataset_stats(graph_dataset)
-    normalise_dataset(graph_dataset, mean, std)
+    mean, std = compute_dataset_stats(train_graphs)
+
+    torch.save(
+        {
+            "mean": mean.cpu(),
+            "std": std.cpu()
+        },
+        os.path.join(save_dir, "normalisation_stats.pt")
+    )
+    
+    normalise_dataset(train_graphs, mean, std)
+    if test_graphs is not None:
+        normalise_dataset(test_graphs, mean, std)
     # quick check after normalising
-    check = torch.cat([g.x for g in graph_dataset[:1000]], dim=0)
+    check = torch.cat([g.x for g in train_graphs[:1000]], dim=0)
     print(f"Post-norm x mean: {check.mean(dim=0).tolist()}", flush=True)
     print(f"Post-norm x std:  {check.std(dim=0).tolist()}", flush=True)
 
     # ── 2. Train / val split ────────────────────────────────────────────
-    n_total = len(graph_dataset)
+    n_total = len(train_graphs)
     n_val   = int(n_total * val_split)
     n_train = n_total - n_val
-
+    
     indices   = torch.randperm(n_total).tolist()
-    train_set = [graph_dataset[i] for i in indices[:n_train]]
-    val_set   = [graph_dataset[i] for i in indices[n_train:]]
+    train_set = [train_graphs[i] for i in indices[:n_train]]
+    val_set   = [train_graphs[i] for i in indices[n_train:]]
 
     # ── 3. DataLoaders ──────────────────────────────────────────────────
     sampler      = make_balanced_sampler(train_set)
-    train_loader = DataLoader(train_set, batch_size=batch_size,
-                              sampler=sampler, num_workers=0, pin_memory=True)
-    val_loader   = DataLoader(val_set,   batch_size=batch_size,
-                              shuffle=False, num_workers=0, pin_memory=True)
+    train_loader = DataLoader(
+        train_set,
+        batch_size=batch_size,
+        sampler=sampler,
+        num_workers=2,
+        pin_memory=True
+    )
+    
+    test_loader = None
+
+    if test_graphs is not None:
+        test_loader = DataLoader(
+            test_graphs,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=2,
+            pin_memory=True
+        )
+    
+    val_loader = DataLoader(
+        val_set,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=2,
+        pin_memory=True
+    )
 
     # Sanity check — confirm all 3 labels appear in a sample batch
     sample = next(iter(train_loader))
@@ -211,4 +245,27 @@ def run_training(graph_dataset: list,
     print(f"\nBest val silhouette: {best_sil:.3f}", flush=True)
     print(f"Band importances: {model.get_band_importance()}", flush=True)
 
-    return model, train_history, val_history
+    test_results = None
+
+    if test_loader is not None:
+        test_z, test_labels = evaluate(model, test_loader, device)
+    
+        from sklearn.metrics import silhouette_score
+    
+        try:
+            test_sil = silhouette_score(test_z, test_labels)
+        except Exception:
+            test_sil = 0.0
+    
+        test_results = {
+            "z": test_z,
+            "labels": test_labels,
+            "silhouette": test_sil
+        }
+    
+        print(f"\n=== LOSO TEST ===", flush=True)
+        print(f"Test subject: 29", flush=True)
+        print(f"Test graphs: {len(test_graphs)}", flush=True)
+        print(f"Test silhouette: {test_sil:.4f}", flush=True)
+
+    return model, train_history, val_history, test_results

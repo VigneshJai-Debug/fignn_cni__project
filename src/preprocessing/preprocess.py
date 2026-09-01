@@ -99,17 +99,25 @@ def extract_trial_epochs(raw):
     return epochs.get_data()   # (n_trials, n_ch, n_times)
 
 
+def epoch_signal(data: np.ndarray, sfreq: float) -> np.ndarray:
+    """Cut continuous signal into fixed 2-second non-overlapping windows."""
+    n_ch, n_times = data.shape
+    epoch_samples = int(EPOCH_DURATION * sfreq)
+    n_epochs = n_times // epoch_samples
+    return np.stack(
+        [data[:, i * epoch_samples : (i + 1) * epoch_samples]
+         for i in range(n_epochs)],
+        axis=0
+    )
+
 def process_file(set_path: str, label: int) -> dict:
     print(f"  Loading: {set_path.split('/')[-1]}  label={label}")
-
     raw      = load_and_clean(set_path)
     sfreq    = raw.info["sfreq"]
     ch_names = raw.ch_names
 
     events, event_id = mne.events_from_annotations(raw)
 
-    # Stimulus code per condition — middle digit = N-back level
-    # zeroBACK→6021, oneBACK→6121, twoBACK→6221, RS_Beg_EC→use 6021 if present
     STIMULUS_CODES = ['6021', '6121', '6221']
     stim_code = None
     for code in STIMULUS_CODES:
@@ -118,36 +126,30 @@ def process_file(set_path: str, label: int) -> dict:
             break
 
     if stim_code is None:
-        raise ValueError(f"No stimulus code found in {set_path}. Available: {list(event_id.keys())}")
+        # Resting state — no stimulus events, use fixed 2-second windows
+        print(f"    No stimulus code — using fixed windows (resting state)")
+        band_epochs = {}
+        for band, (lo, hi) in FREQ_BANDS.items():
+            raw_filt = raw.copy().filter(l_freq=lo, h_freq=hi,
+                                          fir_window='hamming', verbose=False)
+            signal   = raw_filt.get_data()
+            epochs   = epoch_signal(signal, sfreq)  # fixed windows ok for rest
+            band_epochs[band] = epochs
+        n_trials = band_epochs["delta"].shape[0]
+    else:
+        # Task — event-aligned epoching
+        band_epochs = {}
+        for band, (lo, hi) in FREQ_BANDS.items():
+            raw_filt = raw.copy().filter(l_freq=lo, h_freq=hi,
+                                          fir_window='hamming', verbose=False)
+            epo_filt = mne.Epochs(raw_filt, events,
+                                   event_id={stim_code: event_id[stim_code]},
+                                   tmin=0.0, tmax=2.0,
+                                   baseline=None, preload=True, verbose=False)
+            band_epochs[band] = epo_filt.get_data()
+        n_trials = band_epochs["delta"].shape[0]
 
-    epo = mne.Epochs(
-        raw, events,
-        event_id={stim_code: event_id[stim_code]},
-        tmin=0.0, tmax=2.0,
-        baseline=None,
-        preload=True,
-        verbose=False
-    )
-    trial_data = epo.get_data()   # (n_trials, n_ch, n_times)
-    n_trials   = trial_data.shape[0]
-
-    band_epochs = {}
-    for band, (lo, hi) in FREQ_BANDS.items():
-        # Filter continuous signal first
-        raw_filt = raw.copy().filter(l_freq=lo, h_freq=hi, 
-                                      fir_window='hamming', verbose=False)
-        # Then extract trial epochs from filtered signal
-        epo_filt = mne.Epochs(
-            raw_filt, events,
-            event_id={stim_code: event_id[stim_code]},
-            tmin=0.0, tmax=2.0,
-            baseline=None,
-            preload=True,
-            verbose=False
-        )
-        band_epochs[band] = epo_filt.get_data()   # (n_trials, n_ch, 1001)
-
-    print(f"    → {len(ch_names)} ch  |  {n_trials} trials (code {stim_code})  |  {sfreq} Hz")
+    print(f"    → {len(ch_names)} ch  |  {n_trials} trials  |  {sfreq} Hz")
 
     return {
         "band_epochs": band_epochs,

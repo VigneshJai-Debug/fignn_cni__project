@@ -42,29 +42,15 @@ from torch_geometric.nn import GATConv, global_mean_pool
 class BandWeightLayer(nn.Module):
     def __init__(self, n_bands: int = 4):
         super().__init__()
-        self.plv_weights  = nn.Parameter(torch.ones(n_bands))
-        self.corr_weights = nn.Parameter(torch.ones(n_bands))
-
+        self.raw_weights = nn.Parameter(torch.ones(4))
     def forward(self, edge_attr: torch.Tensor) -> torch.Tensor:
-        """
-        edge_attr : (n_edges, 8) — first 4 PLV, last 4 correlation
-        """
-        w_plv  = F.softmax(self.plv_weights,  dim=0)
-        w_corr = F.softmax(self.corr_weights, dim=0)
-        
-        plv_scaled  = edge_attr[:, :4] * w_plv
-        corr_scaled = edge_attr[:, 4:] * w_corr
-        
-        return torch.cat([plv_scaled, corr_scaled], dim=1)
-
+        w = F.softmax(self.raw_weights, dim=0)
+        return edge_attr * w
+    
     def get_weights(self) -> dict:
-        w_plv  = F.softmax(self.plv_weights,  dim=0).detach().cpu().numpy()
-        w_corr = F.softmax(self.corr_weights, dim=0).detach().cpu().numpy()
-        bands  = ["delta", "theta", "alpha", "beta"]
-        return {
-            'plv':  {b: float(w_plv[i])  for i, b in enumerate(bands)},
-            'corr': {b: float(w_corr[i]) for i, b in enumerate(bands)},
-        }
+        w = F.softmax(self.raw_weights, dim=0).detach().cpu().numpy()
+        bands = ["delta", "theta", "alpha", "beta"]
+        return {b: float(w[i]) for i, b in enumerate(bands)}
 
 
 class FIGNNEncoder(nn.Module):
@@ -83,7 +69,7 @@ class FIGNNEncoder(nn.Module):
     # Change FIGNNEncoder defaults:
     def __init__(self,
                  node_in_dim : int = 4,
-                 edge_dim    : int = 8,
+                 edge_dim    : int = 4,
                  hidden_dim  : int = 128,   # was 64
                  latent_dim  : int = 64,    # was 32
                  n_heads     : int = 8,     # was 4

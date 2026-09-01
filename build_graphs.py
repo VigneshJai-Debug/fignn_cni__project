@@ -31,18 +31,17 @@ print(f"Found {len(set_files)} files", flush=True)
 
 all_graphs = []
 for i, (set_path, label) in enumerate(set_files):
-    sub  = set_path.split('/')[-4]
-    task = set_path.split('/')[-1]
-    print(f"[{i+1}/{len(set_files)}] {sub} {task}", flush=True)
-    try:
-        processed = process_file(set_path, label)
-        plv_list  = batch_compute_plv(processed["band_epochs"], verbose=False)
-        graphs    = build_graph_dataset(processed, plv_list)
-        all_graphs.extend(graphs)
-        print(f"  +{len(graphs)} graphs | total: {len(all_graphs)}", flush=True)
-    except Exception as e:
-        print(f"  ERROR: {e} — skipping", flush=True)
-        continue
+    sub_str = set_path.split('/')[-4]   # 'sub-01'
+    ses_str = set_path.split('/')[-3]   # 'ses-S1'
+    sub_id  = int(sub_str.split('-')[1])  # 1
+    ses_id  = int(ses_str.split('-S')[1]) # 1
+
+    processed    = process_file(set_path, label)
+    conn_list    = batch_compute_plv(processed["band_epochs"], verbose=False)
+    graphs       = build_graph_dataset(processed, conn_list, 
+                                        subject_id=sub_id, 
+                                        session_id=ses_id)
+    all_graphs.extend(graphs)
 
 print(f"\nDataset: {len(all_graphs)} graphs", flush=True)
 

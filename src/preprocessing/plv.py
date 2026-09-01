@@ -81,45 +81,44 @@ def batch_compute_plv(band_epoch_dict: dict, verbose: bool = True) -> list:
     Returns list of dicts with 'plv' and 'corr' keys.
     """
     n_epochs = band_epoch_dict["delta"].shape[0]
-    connectivity_list = []
+    plv_list = []
 
     for i in range(n_epochs):
         if verbose and i % 20 == 0:
-            print(f"    Connectivity: epoch {i}/{n_epochs}")
-        connectivity_list.append(
-            compute_all_band_connectivity(band_epoch_dict, i)
-        )
-    return connectivity_list
+            print(f"    PLV: epoch {i}/{n_epochs}")
+        plv_list.append(compute_all_band_plv(band_epoch_dict, i))
+ 
+    return plv_list   # length = n_epochs
 
-def compute_correlation_matrix(epoch: np.ndarray) -> np.ndarray:
-    """
-    Compute Pearson correlation between every pair of channels.
-    Captures amplitude correlation — complementary to PLV phase sync.
+# def compute_correlation_matrix(epoch: np.ndarray) -> np.ndarray:
+#     """
+#     Compute Pearson correlation between every pair of channels.
+#     Captures amplitude correlation — complementary to PLV phase sync.
     
-    Args:
-        epoch : (n_channels, n_timepoints)
-    Returns:
-        corr  : (n_channels, n_channels) symmetric, values in [-1, 1]
-    """
-    # Z-score each channel
-    mean = epoch.mean(axis=1, keepdims=True)
-    std  = epoch.std(axis=1, keepdims=True) + 1e-30
-    z    = (epoch - mean) / std          # (n_ch, n_times)
+#     Args:
+#         epoch : (n_channels, n_timepoints)
+#     Returns:
+#         corr  : (n_channels, n_channels) symmetric, values in [-1, 1]
+#     """
+#     # Z-score each channel
+#     mean = epoch.mean(axis=1, keepdims=True)
+#     std  = epoch.std(axis=1, keepdims=True) + 1e-30
+#     z    = (epoch - mean) / std          # (n_ch, n_times)
     
-    # Correlation matrix
-    corr = (z @ z.T) / epoch.shape[1]   # (n_ch, n_ch)
-    np.clip(corr, -1.0, 1.0, out=corr)
-    return corr.astype(np.float32)
+#     # Correlation matrix
+#     corr = (z @ z.T) / epoch.shape[1]   # (n_ch, n_ch)
+#     np.clip(corr, -1.0, 1.0, out=corr)
+#     return corr.astype(np.float32)
 
 
-def compute_all_band_connectivity(band_epoch_dict: dict, epoch_idx: int) -> dict:
-    """
-    Compute both PLV and correlation for one epoch across all bands.
-    Returns dict with 'plv' and 'corr' keys, each containing band dicts.
-    """
-    result = {'plv': {}, 'corr': {}}
-    for band in band_epoch_dict:
-        epoch = band_epoch_dict[band][epoch_idx]
-        result['plv'][band]  = compute_plv_matrix(epoch)
-        result['corr'][band] = compute_correlation_matrix(epoch)
-    return result
+# def compute_all_band_connectivity(band_epoch_dict: dict, epoch_idx: int) -> dict:
+#     """
+#     Compute both PLV and correlation for one epoch across all bands.
+#     Returns dict with 'plv' and 'corr' keys, each containing band dicts.
+#     """
+#     result = {'plv': {}, 'corr': {}}
+#     for band in band_epoch_dict:
+#         epoch = band_epoch_dict[band][epoch_idx]
+#         result['plv'][band]  = compute_plv_matrix(epoch)
+#         result['corr'][band] = compute_correlation_matrix(epoch)
+#     return result

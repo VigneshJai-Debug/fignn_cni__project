@@ -126,17 +126,8 @@ def run_full_evaluation(model, graph_dataset, device, batch_size=32):
     z, labels = evaluate(model, loader, device)
     sil = compute_silhouette(z, labels)
     plot_tsne(z, labels)
-    bw = model.get_band_importance()
-    print(f"PLV band weights:  {bw['plv']}")
-    print(f"Corr band weights: {bw['corr']}")
-    # plot both separately
-    plot_band_importance(
-        bw["plv"],
-        save_path="/lp-dev/24BCE1793/outputs/plots/band_importance_plv.png"
-    )
     
-    plot_band_importance(
-        bw["corr"],
-        save_path="/lp-dev/24BCE1793/outputs/plots/band_importance_corr.png"
-    )
+    bw = model.get_band_importance()
+    print(f"Band importances: {bw}")
+    plot_band_importance(bw)  # single plot, not two
     return {"silhouette": sil, "band_weights": bw, "z": z, "labels": labels}

@@ -32,7 +32,7 @@ BANDS = ["delta", "theta", "alpha", "beta"]
 PLV_THRESHOLD = 0.5
 
 
-def plv_to_graph(connectivity: dict,
+def plv_to_graph(connectivity: list,
                  node_features: np.ndarray,
                  label: int,
                  threshold: float = PLV_THRESHOLD) -> Data:
@@ -46,12 +46,11 @@ def plv_to_graph(connectivity: dict,
     """
     n_ch = node_features.shape[0]
 
-    plv_matrices  = connectivity['plv']
-    corr_matrices = connectivity['corr']
-
+    plv_matrices  = connectivity
+    
     # Stack PLV across bands → (n_ch, n_ch, 4)
     plv_stack  = np.stack([plv_matrices[b]  for b in BANDS], axis=-1)
-    corr_stack = np.stack([corr_matrices[b] for b in BANDS], axis=-1)
+    # corr_stack = np.stack([corr_matrices[b] for b in BANDS], axis=-1)
 
     # Use mean PLV to decide which edges to keep
     plv_mean = plv_stack.mean(axis=-1)
@@ -72,8 +71,8 @@ def plv_to_graph(connectivity: dict,
 
     # Edge features: PLV (4) + correlation (4) = 8 per edge
     plv_feat  = plv_stack[rows, cols]   # (n_edges, 4)
-    corr_feat = corr_stack[rows, cols]  # (n_edges, 4)
-    edge_feat = np.concatenate([plv_feat, corr_feat], axis=1)  # (n_edges, 8)
+    # corr_feat = corr_stack[rows, cols]  # (n_edges, 4)
+    edge_feat = plv_stack[rows, cols]  # (n_edges, 8)
 
     # Undirected: add reverse edges
     edge_index = torch.tensor(
@@ -92,12 +91,8 @@ def plv_to_graph(connectivity: dict,
     return Data(x=x, edge_index=edge_index, edge_attr=edge_attr, y=y)
 
 
-def build_graph_dataset(processed_file: dict,
-                        connectivity_list: list) -> list:
-    """
-    Build all graphs for one .set file.
-    connectivity_list: output of batch_compute_plv (now returns plv+corr)
-    """
+def build_graph_dataset(processed_file: dict, connectivity_list: list,
+                        subject_id: int = 0, session_id: int = 0) -> list:
     band_epoch_dict = processed_file["band_epochs"]
     label           = processed_file["label"]
     n_epochs        = processed_file["n_epochs"]
@@ -107,6 +102,8 @@ def build_graph_dataset(processed_file: dict,
         node_feats   = compute_band_power(band_epoch_dict, i)
         connectivity = connectivity_list[i]
         graph        = plv_to_graph(connectivity, node_feats, label)
+        graph.subject = subject_id   # int 1-29
+        graph.session  = session_id  # int 1-3
         graphs.append(graph)
 
     print(f"    Built {len(graphs)} graphs  |  "
