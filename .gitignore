@@ -33,19 +33,41 @@ data/
 *.hdf5
 *.h5
 
-# ── Model Outputs ─────────────────────────────────────────────────────
+# ── Model Outputs ────────────────────────────────────────────────────
 outputs/checkpoints/
 outputs/weights/
 *.pth
 *.pt
 *.ckpt
 
-# ── Logs ─────────────────────────────────────────────────────────────
+# ── Logs / experiment artifacts ──────────────────────────────────────
 logs/
 *.log
 runs/
 wandb/
 lightning_logs/
+
+# ── LaTeX build artifacts ────────────────────────────────────────────
+*.aux
+*.bbl
+*.blg
+*.brf
+*.dvi
+*.fdb_latexmk
+*.fls
+*.lof
+*.lot
+*.nav
+*.out
+*.snm
+*.synctex
+*.synctex.gz
+*.toc
+*.xdv
+
+# Generated compiled manuscript PDFs — keep figure PDFs.
+paper/main.pdf
+paper_clean/main.pdf
 
 # ── OS Junk ──────────────────────────────────────────────────────────
 .DS_Store

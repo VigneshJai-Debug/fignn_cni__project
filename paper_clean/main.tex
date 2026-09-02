@@ -1,0 +1,1003 @@
+\let\TeXyear\year
+\documentclass{ieeeaccess}
+\let\setyear\year
+\let\year\TeXyear
+
+% =========================================================
+% Packages
+% =========================================================
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{array}
+\usepackage{url}
+\usepackage{placeins}
+% TikZ removed: native LaTeX boxes avoid PGF/IEEE Access conditional conflicts
+
+
+% =========================================================
+% Manuscript metadata
+% =========================================================
+\begin{document}
+
+\history{Manuscript prepared September 2026}
+\doi{}
+
+\title{Frequency-Informed Graph Neural Network for Cross-Subject EEG Workload Representation and Personal Calibration}
+
+\author{\uppercase{Vignesh Jaisankar}\authorrefmark{1}}
+
+% Replace the bracketed fields before submission.
+\address[1]{[Department, Institution], India
+(e-mail: [email])}
+
+\corresp{Corresponding author: Vignesh Jaisankar
+(e-mail: [email]).}
+
+\markboth
+{Jaisankar: FIGNN for EEG Workload Representation and Personal Calibration}
+{Jaisankar: FIGNN for EEG Workload Representation and Personal Calibration}
+
+% =========================================================
+% Abstract
+% =========================================================
+\begin{abstract}
+Electroencephalographic (EEG) representations of cognitive workload
+exhibit substantial inter-subject variability, making direct transfer of
+population-level models to unseen individuals challenging. This work
+proposes a Frequency-Informed Graph Neural Network (FIGNN) that learns a
+64-dimensional latent representation of EEG workload from frequency-domain
+node features and functional connectivity. Each EEG epoch is represented as
+a graph whose nodes correspond to EEG electrodes, node attributes encode
+relative power in the delta, theta, alpha, and beta bands, and edge
+attributes encode phase-locking value (PLV) across the same frequency
+bands. A learnable frequency-weighting mechanism modulates the edge
+attributes before two edge-aware graph attention layers produce the
+graph-level representation. Supervised contrastive learning shapes the
+latent space according to workload condition rather than optimizing a
+conventional workload classifier.
+
+Transferability is evaluated using strict 29-fold leave-one-subject-out
+(LOSO) evaluation. Across the 29 held-out subjects, the mean Procrustes
+trajectory similarity is 0.860, while the 0-back to 1-back centroid
+distance is smaller than the 0-back to 2-back distance for 28 of 29
+subjects. A second-stage experiment evaluates whether the transferred
+population geometry can be personalized without retraining. Resting-state
+and known 2-back latent centroids are used as subject-specific anchors to
+calibrate an estimate of the unseen 1-back centroid. Personal calibration
+reduces the mean 64-dimensional estimation error from 0.072319 to
+0.046755, with improvement observed for 22 of 29 subjects. The results
+support a two-stage approach in which population-level latent workload
+geometry is transferred to an unseen subject and subsequently adapted
+using limited subject-specific information.
+\end{abstract}
+
+\begin{keywords}
+EEG, cognitive workload, graph neural network, functional connectivity,
+phase-locking value, supervised contrastive learning, transfer learning,
+latent representation, subject-specific calibration
+\end{keywords}
+
+\titlepgskip=-15pt
+\makeatletter
+\gdef\thevol{14}
+\gdef\theyear{2026}
+\makeatother
+
+\maketitle
+
+% =========================================================
+\section{Introduction}
+% =========================================================
+
+Electroencephalography (EEG) provides a non-invasive measure of neural
+activity and has been widely investigated for estimating cognitive
+workload. EEG workload-related activity is commonly examined in terms of
+frequency-domain characteristics, including delta, theta, alpha, and beta
+bands \cite{chikhi2022}. However, workload-related EEG patterns exhibit
+substantial variability between individuals. Consequently, a representation
+learned from a population of subjects may capture general workload structure
+while still exhibiting subject-specific shifts in the location and geometry
+of workload states.
+
+Conventional EEG workload studies frequently formulate the problem as
+classification, where the objective is to discriminate among workload
+conditions. Although classification performance provides a useful
+evaluation, it does not directly answer whether a learned representation
+contains a transferable workload structure. In particular, workload can be
+represented as an ordered progression of cognitive demand rather than as
+completely isolated classes. A representation can therefore preserve useful
+workload structure even when neighboring workload states remain partially
+overlapping in latent space.
+
+Graph neural networks (GNNs) provide a natural framework for EEG because
+electrodes can be represented as graph nodes while functional relationships
+between electrodes can be represented as graph edges. Recent surveys of
+GNN-based EEG methods highlight graph construction, node representation,
+and graph propagation or attention as important design choices
+\cite{klepl2024}. Frequency-domain EEG features additionally provide
+information about neural activity across distinct oscillatory bands.
+Combining these forms of information makes it possible to construct a graph
+representation containing both local spectral characteristics and
+inter-electrode functional connectivity.
+
+This paper proposes a Frequency-Informed Graph Neural Network (FIGNN) for
+learning such a representation. The model uses relative band-power features
+at graph nodes and frequency-specific phase-locking values as edge
+attributes. A learnable frequency-weighting layer allows the model to
+determine the relative contribution of the four frequency bands to the
+connectivity representation. Edge-aware graph attention layers then
+aggregate information across the EEG graph to produce a normalized
+64-dimensional latent representation.
+
+The main objective of this work is not to establish another workload
+classification benchmark. Instead, the study asks whether the learned
+latent geometry transfers to individuals who were completely excluded from
+training. This is evaluated through strict 29-fold leave-one-subject-out
+(LOSO) evaluation. For each held-out subject, the corresponding model is
+trained only on the remaining subjects and subsequently frozen before
+evaluation. The resulting subject-level workload centroids are compared
+with the corresponding population trajectory using geometric measures.
+
+A second objective is to investigate whether a transferable population
+representation can subsequently be personalized without retraining the
+graph neural network. Using the frozen LOSO representation, resting-state
+and known 2-back measurements from an unseen subject are used as
+subject-specific anchors to calibrate the predicted position of the unseen
+1-back state.
+
+The contributions of this work are:
+
+\begin{enumerate}
+    \item A frequency-informed EEG graph representation combining
+    frequency-specific node features, PLV edge attributes, and learnable
+    frequency weighting within an edge-aware graph attention architecture.
+
+    \item A strict 29-subject LOSO evaluation framework that evaluates
+    transferability through latent workload trajectory geometry rather than
+    relying exclusively on classification accuracy.
+
+    \item A subject-specific calibration procedure that uses resting-state
+    and known 2-back anchors to improve estimation of an unseen intermediate
+    workload state while keeping the learned FIGNN representation frozen.
+\end{enumerate}
+
+
+% =========================================================
+\section{Related Work}
+% =========================================================
+
+Graph neural networks have increasingly been applied to EEG analysis by
+representing electrodes as graph nodes and relationships between electrodes
+as graph edges. Existing approaches have explored graph convolution, graph
+attention, spatio-temporal graph learning, and task-specific graph
+construction for EEG analysis and classification. A recent survey
+systematizes these GNN-based EEG approaches and identifies graph
+construction, feature representation, and graph propagation as central
+components of the design space \cite{klepl2024}.
+
+For cognitive workload, graph-based approaches have incorporated both
+frequency-domain features and functional connectivity. Cao et al. used
+functional brain connectivity features for multi-level workload
+classification, demonstrating the utility of connectivity-based EEG
+representations \cite{cao2022}. More recently, Wei et al. combined
+frequency-domain EEG features with PLV, PLI, Pearson correlation, and
+mutual-information graphs in a stacked graph-attention architecture for
+task-independent workload classification \cite{wei2025}. These approaches
+remain primarily classification-oriented, whereas the present work evaluates
+the geometry of workload trajectories across completely unseen subjects.
+
+The proposed frequency-weighting mechanism is also related to recent work on
+learnable frequency selection for EEG. Ding et al. introduced an explicit
+learnable frequency-weighting layer for EEG decoding, providing a direct
+architectural precedent for adaptive spectral weighting
+\cite{ding2025freq}. FIGNN differs in using frequency weighting within a
+graph-based representation whose downstream objective is supervised
+contrastive latent geometry rather than classification.
+
+Functional connectivity is represented in FIGNN using phase-locking value.
+PLV has long been used to quantify phase synchronization between neural
+signals and provides a natural frequency-specific connectivity measure for
+EEG graphs \cite{lachaux1999}. The use of attention-based graph propagation
+is motivated by graph attention networks, which allow learned attention
+coefficients to determine the contribution of neighboring nodes
+\cite{velickovic2018}.
+
+Subject adaptation provides another relevant line of work. Resting-state EEG
+has been used as subject-specific information for adapting models to unseen
+individuals, including resting-state transfer strategies for cross-subject
+EEG decoding \cite{an2024}. Longitudinal evidence also indicates that
+individual EEG measures can exhibit meaningful temporal stability, supporting
+the broader motivation for subject-specific baselines
+\cite{uudeberg2025}. In contrast, the present Stage 2 procedure does not
+fine-tune the encoder; it uses resting state and a known high-load state as
+geometric anchors within a frozen latent representation.
+
+These studies motivate the distinction between architectural transfer and
+geometric transfer. FIGNN is evaluated not only by whether workload states
+can be discriminated, but by whether the relative arrangement of workload
+states is preserved for a completely unseen subject and whether that geometry
+can subsequently be calibrated using limited subject-specific information.
+
+
+% =========================================================
+\section{Methodology}
+% =========================================================
+
+\subsection{Overview}
+
+The proposed framework consists of two experimental stages. First, FIGNN is
+trained and evaluated using strict leave-one-subject-out cross-subject
+evaluation to determine whether workload trajectory geometry transfers to
+subjects unseen during training. Second, the learned representation is kept
+frozen and a subject-specific calibration procedure uses two known states to
+estimate the latent position of an unseen intermediate workload state.
+
+
+\begin{figure}[!t]
+\centering
+\setlength{\tabcolsep}{2pt}
+\renewcommand{\arraystretch}{1.15}
+\begin{tabular}{c@{\ }c@{\ }c}
+\fbox{\parbox[c][11mm][c]{0.20\columnwidth}{\centering Raw EEG\\recordings}}
+&
+$\rightarrow$
+&
+\fbox{\parbox[c][11mm][c]{0.20\columnwidth}{\centering Event-aligned\\N-back epochs}}
+\\[3mm]
+\fbox{\parbox[c][11mm][c]{0.20\columnwidth}{\centering 62-channel\\EEG graphs}}
+&
+$\rightarrow$
+&
+\fbox{\parbox[c][11mm][c]{0.20\columnwidth}{\centering Relative power +\\frequency-specific PLV}}
+\\[3mm]
+\fbox{\parbox[c][11mm][c]{0.20\columnwidth}{\centering Learnable\\frequency weighting}}
+&
+$\rightarrow$
+&
+\fbox{\parbox[c][11mm][c]{0.20\columnwidth}{\centering Edge-aware GAT\\8$\times$128 $\rightarrow$ 64}}
+\\[3mm]
+\fbox{\parbox[c][11mm][c]{0.20\columnwidth}{\centering L2-normalized\\$\mathbf z\in\mathbb R^{64}$}}
+&
+$\rightarrow$
+&
+\fbox{\parbox[c][11mm][c]{0.20\columnwidth}{\centering Supervised contrastive\\learning, $\tau=0.1$}}
+\\[3mm]
+\multicolumn{3}{c}{
+\fbox{\parbox[c][11mm][c]{0.64\columnwidth}{\centering Stage 1: strict 29-fold LOSO $\quad\rightarrow\quad$
+Stage 2: frozen-model calibration using REST + known 2-back anchors}}}
+\end{tabular}
+\caption{Overview of the FIGNN population-to-personalization framework. Event-aligned EEG epochs are converted into 62-channel graphs containing relative band-power node features and frequency-specific PLV edge features. Learnable frequency weighting and edge-aware graph attention produce a 64-dimensional latent representation. Stage 1 evaluates transferability under strict LOSO evaluation, while Stage 2 uses the frozen representation for subject-specific calibration.}
+\label{fig:overall_pipeline}
+\end{figure}
+
+
+The graph construction and representation-learning stages are followed by
+geometric evaluation rather than a conventional classification head. The
+overall process can therefore be summarized as
+
+\begin{equation}
+\text{EEG}
+\rightarrow
+\text{graph construction}
+\rightarrow
+\text{FIGNN}
+\rightarrow
+\mathbf{z}\in\mathbb{R}^{64}
+\rightarrow
+\text{latent workload geometry}.
+\end{equation}
+
+
+% ---------------------------------------------------------
+\subsection{EEG Graph Representation}
+% ---------------------------------------------------------
+
+Each EEG epoch is represented as a graph
+
+\begin{equation}
+G=(V,E,X,E_f),
+\end{equation}
+
+where $V$ denotes the EEG electrodes, $E$ denotes functional connectivity
+edges, $X$ denotes node features, and $E_f$ denotes frequency-specific edge
+attributes.
+
+The final graph representation contains 62 EEG channels. Each node contains
+four relative-power features corresponding to the delta, theta, alpha, and
+beta frequency bands:
+
+\begin{equation}
+\mathbf{x}_i =
+[
+P_i^{\delta},
+P_i^{\theta},
+P_i^{\alpha},
+P_i^{\beta}
+].
+\end{equation}
+
+Relative band power is computed by normalizing each band by the total power
+across the four retained bands. Thus, for band $b$,
+
+\begin{equation}
+P_i^{b}
+=
+\frac{P_{i,\mathrm{abs}}^{b}}
+{\sum_{k\in\{\delta,\theta,\alpha,\beta\}}
+P_{i,\mathrm{abs}}^{k}}.
+\end{equation}
+
+Functional connectivity between electrode pairs is represented using
+phase-locking value (PLV). PLV quantifies phase synchronization between
+neural signals and is computed independently for the four frequency bands
+\cite{lachaux1999}. The resulting edge feature for electrodes $i$ and $j$
+is
+
+\begin{equation}
+\mathbf{e}_{ij} =
+[
+PLV_{ij}^{\delta},
+PLV_{ij}^{\theta},
+PLV_{ij}^{\alpha},
+PLV_{ij}^{\beta}
+].
+\end{equation}
+
+Only PLV-based connectivity is retained in the final graph representation.
+Edges are retained when their PLV exceeds the final threshold of 0.5.
+Correlation-based edge features were explored during development but were
+not included in the final model.
+
+Thus, the graph contains frequency-specific information at both the node
+and edge levels.
+
+
+% ---------------------------------------------------------
+\subsection{Frequency-Informed Graph Neural Network}
+% ---------------------------------------------------------
+
+The FIGNN architecture contains a learnable frequency-weighting mechanism
+followed by two edge-aware graph attention layers. The use of graph
+attention is based on the ability of attention mechanisms to learn the
+relative importance of neighboring graph nodes \cite{velickovic2018}.
+
+Let $\boldsymbol{\theta}\in\mathbb{R}^{4}$ denote four learnable frequency
+parameters. The corresponding normalized band weights are
+
+\begin{equation}
+\mathbf{w}
+=
+\operatorname{softmax}(\boldsymbol{\theta}).
+\end{equation}
+
+The edge attributes are transformed according to
+
+\begin{equation}
+\mathbf{e}'_{ij}
+=
+\mathbf{e}_{ij}\odot\mathbf{w},
+\end{equation}
+
+where $\odot$ denotes element-wise multiplication.
+
+This mechanism allows the model to learn how strongly each frequency band
+contributes to the functional-connectivity representation rather than
+imposing equal frequency contributions.
+
+The first graph attention layer receives four-dimensional node features and
+uses eight attention heads with 128 output features per head. Its
+concatenated representation therefore contains
+
+\begin{equation}
+8\times128=1024
+\end{equation}
+
+features per node.
+
+Layer normalization, ELU activation, and dropout with probability 0.3 are
+applied after the first graph attention layer.
+
+The second edge-aware graph attention layer maps the 1024-dimensional node
+representation to a 64-dimensional representation using a single attention
+head. Layer normalization and global mean pooling across graph nodes then
+produce a graph-level vector:
+
+\begin{equation}
+\mathbf{h}_G
+=
+\operatorname{MeanPool}
+(\mathbf{H}^{(2)}).
+\end{equation}
+
+Finally, the graph representation is L2-normalized:
+
+\begin{equation}
+\mathbf{z}
+=
+\frac{\mathbf{h}_G}
+{\|\mathbf{h}_G\|_2},
+\qquad
+\mathbf{z}\in\mathbb{R}^{64}.
+\end{equation}
+
+
+% ---------------------------------------------------------
+\subsection{Supervised Contrastive Representation Learning}
+% ---------------------------------------------------------
+
+FIGNN is trained using supervised contrastive learning rather than a
+conventional classification head. Given a batch of graph representations,
+samples belonging to the same workload condition form positive pairs while
+samples from different workload conditions act as negatives. The supervised
+contrastive objective encourages representations belonging to the same
+workload condition to occupy nearby regions of latent space while separating
+representations associated with different workload conditions
+\cite{khosla2020}.
+
+The temperature parameter used in the final training configuration is
+
+\begin{equation}
+\tau=0.1.
+\end{equation}
+
+This objective is appropriate for the present study because the downstream
+analysis concerns the geometry of the learned representation rather than
+only discrete class predictions.
+
+
+% ---------------------------------------------------------
+\subsection{Training Configuration}
+% ---------------------------------------------------------
+
+The final FIGNN training configuration uses AdamW optimization with an
+initial learning rate of $10^{-3}$ and weight decay of $10^{-4}$. A cosine
+annealing learning-rate schedule is used during training. The final LOSO
+experiments use 500 training epochs and a batch size of 128.
+
+A balanced sampling strategy is used during training. A validation subset is
+formed only from the training subjects within each LOSO fold. Model
+selection therefore does not use the held-out subject. The held-out subject
+remains completely unseen during training and checkpoint selection.
+
+
+% ---------------------------------------------------------
+\subsection{Preprocessing and Graph Construction}
+% ---------------------------------------------------------
+
+The final preprocessing pipeline uses event-aligned N-back epochs rather
+than arbitrary fixed windows. N-back stimulus annotations are mapped to
+0-back, 1-back, and 2-back workload conditions, and each trial is extracted
+from stimulus onset for a 2-s interval. This produces time-locked epochs
+corresponding directly to the cognitive event.
+
+The final graph construction uses the preprocessed EEG epoch to calculate
+relative band power for each retained EEG channel and PLV-based functional
+connectivity between channel pairs. Relative power forms the four-dimensional
+node representation, while the four frequency-specific PLV values form the
+edge representation. Edges are retained using a PLV threshold of 0.5.
+
+The resulting graphs contain 62 EEG channels and four node features per
+channel. The graph data also retain subject and session metadata required
+for strict cross-subject evaluation and subject-specific calibration.
+
+
+% =========================================================
+\subsection{Stage 1: Leave-One-Subject-Out Evaluation}
+% =========================================================
+
+Stage 1 evaluates cross-subject transferability using 29-fold LOSO
+evaluation. For fold $s$, all recordings from subject $s$ are excluded from
+model training. FIGNN is trained using the remaining 28 subjects and the
+resulting fold-specific checkpoint is frozen before evaluating subject $s$.
+
+Formally,
+
+\begin{equation}
+\mathcal{D}_{train}^{(s)}
+=
+\mathcal{D}\setminus\mathcal{D}_{s},
+\end{equation}
+
+where $\mathcal{D}_{s}$ contains all samples belonging to held-out subject
+$s$.
+
+For the workload trajectory experiment, the resting-state condition is
+excluded from training and the three N-back workload levels are evaluated
+as
+
+\begin{equation}
+0\text{-back}
+\rightarrow
+1\text{-back}
+\rightarrow
+2\text{-back}.
+\end{equation}
+
+Resting-state graphs are retained in the graph dataset for the later
+subject-specific calibration stage, but are not used as a fourth workload
+class in the Stage 1 training objective.
+
+For each condition $c$, a subject-level latent centroid is calculated as
+
+\begin{equation}
+\mathbf{C}_{s,c}
+=
+\frac{1}{N_{s,c}}
+\sum_{i=1}^{N_{s,c}}
+\mathbf{z}_{s,c,i}.
+\end{equation}
+
+The corresponding population centroid is denoted by
+$\mathbf{C}_{pop,c}$.
+
+
+% ---------------------------------------------------------
+\subsection{Latent Workload Trajectory Geometry}
+% ---------------------------------------------------------
+
+The latent workload trajectory for a subject is defined by the ordered
+centroids
+
+\begin{equation}
+T_s=
+[
+\mathbf{C}_{s,0},
+\mathbf{C}_{s,1},
+\mathbf{C}_{s,2}
+].
+\end{equation}
+
+Three pairwise centroid distances are considered:
+
+\begin{align}
+d_{01} &= \|\mathbf{C}_{s,0}-\mathbf{C}_{s,1}\|_2,\\
+d_{02} &= \|\mathbf{C}_{s,0}-\mathbf{C}_{s,2}\|_2,\\
+d_{12} &= \|\mathbf{C}_{s,1}-\mathbf{C}_{s,2}\|_2.
+\end{align}
+
+A basic monotonicity criterion tests whether
+
+\begin{equation}
+d_{01}<d_{02}.
+\end{equation}
+
+This asks whether the highest workload state is farther from the 0-back
+state than the intermediate 1-back state.
+
+Trajectory similarity between the held-out subject and population
+trajectories is additionally quantified using Procrustes alignment.
+Generalized Procrustes analysis removes differences in translation,
+rotation, and scale and therefore focuses on the relative configuration of
+the workload states \cite{gower1975}.
+
+
+% =========================================================
+\subsection{Stage 2: Subject-Specific Calibration}
+% =========================================================
+
+Stage 2 investigates whether transferable population geometry can be
+personalized without retraining FIGNN.
+
+For each held-out subject, the corresponding LOSO model remains frozen. The
+subject-specific resting-state and known 2-back latent centroids are used as
+two personal anchors. The target is the subject's 1-back latent centroid,
+which is treated as an unseen intermediate state during the calibration
+procedure.
+
+
+
+\begin{figure*}[!t]
+    \centering
+    \setlength{\tabcolsep}{3pt}
+    \renewcommand{\arraystretch}{1.15}
+    \begin{tabular}{c@{\quad}c@{\quad}c@{\quad}c@{\quad}c}
+    \fbox{\parbox[c][12mm][c]{0.16\textwidth}{\centering Frozen LOSO\\FIGNN encoder}}
+    & $\rightarrow$ &
+    \fbox{\parbox[c][12mm][c]{0.16\textwidth}{\centering REST + known\\2-back anchors}}
+    & $\rightarrow$ &
+    \fbox{\parbox[c][12mm][c]{0.16\textwidth}{\centering Subject-specific\\anchor configuration}}
+    \\[3mm]
+    \multicolumn{5}{c}{
+    \fbox{\parbox[c][12mm][c]{0.42\textwidth}{\centering Population workload trajectory}}
+    }
+    \\[3mm]
+    \multicolumn{5}{c}{
+    $\swarrow\hspace{20mm}\searrow$
+    }
+    \\[-1mm]
+    \fbox{\parbox[c][12mm][c]{0.20\textwidth}{\centering Population-only\\1-back estimate}}
+    & $\qquad$ & 
+    \multicolumn{1}{c}{} &
+    $\qquad$ &
+    \fbox{\parbox[c][12mm][c]{0.20\textwidth}{\centering Calibrated\\1-back estimate}}
+    \\[3mm]
+    \multicolumn{5}{c}{
+    $\searrow\hspace{55mm}\swarrow$
+    }
+    \\[-1mm]
+    \multicolumn{5}{c}{
+    \fbox{\parbox[c][12mm][c]{0.42\textwidth}{\centering Compare both estimates with actual held-out 1-back centroid}}
+    }
+    \end{tabular}
+    \caption{Stage 2 subject-specific calibration. The fold-specific LOSO FIGNN encoder remains frozen. Resting-state and known 2-back measurements provide subject-specific latent anchors that transform the population workload geometry. Population-only and calibrated estimates of the unseen 1-back centroid are then compared with the actual held-out centroid only for evaluation.}
+    \label{fig:stage2_pipeline}
+\end{figure*}
+
+
+
+The population-only method provides a baseline estimate of the subject's
+1-back position using population trajectory information. The calibrated
+method transforms this estimate using the subject-specific anchor
+configuration.
+
+Let
+
+\begin{equation}
+\widehat{\mathbf{C}}_{s,1}^{pop}
+\end{equation}
+
+denote the population-only estimate and
+
+\begin{equation}
+\widehat{\mathbf{C}}_{s,1}^{cal}
+\end{equation}
+
+denote the calibrated estimate.
+
+Both are compared against the actual held-out subject 1-back centroid
+$\mathbf{C}_{s,1}$ using the 64-dimensional Euclidean error:
+
+\begin{align}
+\epsilon_s^{pop}
+&=
+\left\|
+\widehat{\mathbf{C}}_{s,1}^{pop}
+-
+\mathbf{C}_{s,1}
+\right\|_2,\\
+\epsilon_s^{cal}
+&=
+\left\|
+\widehat{\mathbf{C}}_{s,1}^{cal}
+-
+\mathbf{C}_{s,1}
+\right\|_2.
+\end{align}
+
+The subject-level percentage improvement is
+
+\begin{equation}
+I_s
+=
+\frac{
+\epsilon_s^{pop}
+-
+\epsilon_s^{cal}
+}{
+\epsilon_s^{pop}
+}
+\times100.
+\end{equation}
+
+No FIGNN parameters are updated using the held-out subject. Calibration
+therefore operates in the frozen latent representation rather than through
+subject-specific model retraining.
+
+
+% =========================================================
+\section{Experimental Setup}
+% =========================================================
+
+\subsection{Dataset}
+
+The primary dataset used in this study is the COG-BCI database
+\cite{hinss2023}. It contains recordings from 29 participants across three
+sessions, with the sessions spaced one week apart. The dataset includes
+multiple cognitive tasks, including N-back, MATB, PVT, and Flanker, as well
+as resting-state recordings. The present work uses the N-back conditions
+for the graded workload trajectory analysis. The dataset documentation
+reports three blocks each of 0-back, 1-back, and 2-back per session.
+
+The COG-BCI recordings were acquired using a 64-electrode EEG system at
+500 Hz. For participants 1--9, electrode Cz was not recorded and is
+therefore absent from those datasets. After the final preprocessing and
+channel-selection pipeline, the graph representation uses 62 EEG channels.
+
+Importantly, resting state is treated separately from the N-back workload
+conditions. It is retained in the processed graph collection for the
+subject-specific Stage 2 calibration experiment, but it is not treated as a
+fourth workload level in Stage 1.
+
+% ---------------------------------------------------------
+\subsection{Preprocessing and Graph Construction}
+% ---------------------------------------------------------
+
+N-back stimulus annotations are used to construct event-aligned epochs.
+The final event mapping assigns the N-back stimulus events to the three
+workload conditions and extracts a 0--2 s interval following stimulus onset.
+This ensures that the extracted signal is aligned with the corresponding
+cognitive event rather than being divided into arbitrary fixed windows.
+
+For every retained EEG channel, relative power is computed for the four
+frequency bands used by FIGNN. The resulting four-dimensional vectors form
+the node features. PLV is computed between electrode pairs independently
+for the same four bands. An edge is retained when its PLV exceeds 0.5,
+producing a sparse functional-connectivity graph.
+
+The final graph therefore has the form
+
+\begin{equation}
+X\in\mathbb{R}^{62\times4},
+\qquad
+E_f\in\mathbb{R}^{N_e\times4},
+\end{equation}
+
+where $N_e$ is the number of retained functional-connectivity edges for a
+given epoch.
+
+The processed graphs contain subject and session identifiers so that
+subject-level separation can be enforced during LOSO evaluation.
+
+
+% ---------------------------------------------------------
+\subsection{Evaluation Protocol}
+% ---------------------------------------------------------
+
+All 29 subjects are evaluated individually under LOSO. For every fold, the
+model trained on the remaining subjects is frozen before latent embeddings
+are generated for the held-out subject.
+
+The primary Stage 1 metrics are trajectory-level geometric measures,
+particularly Procrustes similarity and the ordering of centroid distances.
+Additional diagnostics are retained as supporting analyses rather than
+treated as the primary evidence for transferability.
+
+Stage 2 evaluates whether subject-specific calibration reduces 1-back
+estimation error relative to the population-only baseline. All quantitative
+distance and calibration calculations are performed in the original
+64-dimensional latent space.
+
+
+% =========================================================
+\section{Results}
+% =========================================================
+
+\subsection{Stage 1: Transferability to Unseen Subjects}
+
+All 29 subjects were evaluated under strict LOSO evaluation using
+fold-specific frozen checkpoints.
+
+Across subjects, the mean Procrustes trajectory similarity was
+
+\begin{equation}
+\bar{S}_{proc}=0.860.
+\end{equation}
+
+Furthermore, the monotonic distance relationship
+
+\begin{equation}
+d_{01}<d_{02}
+\end{equation}
+
+was observed for 28 of the 29 held-out subjects.
+
+These results indicate that the relative geometry of the workload trajectory
+is substantially preserved across subjects even though the individual
+workload representations are not perfectly separated into isolated
+clusters.
+
+\begin{figure*}[!t]
+    \centering
+    \includegraphics[width=\textwidth]
+    {figures/fig_stage1_core_metrics.png}
+    \caption{Core cross-subject latent-geometry results across all 29
+    LOSO folds. The figure summarizes subject-level trajectory similarity
+    and alignment with the population workload geometry.}
+    \label{fig:stage1_core}
+\end{figure*}
+
+
+% ---------------------------------------------------------
+\subsection{Representative Unseen-Subject Trajectory}
+% ---------------------------------------------------------
+
+To provide an interpretable visualization of the geometric result,
+Fig.~\ref{fig:trajectory_analysis} shows a representative held-out
+subject alongside the population trajectory. The six centroid locations are
+projected jointly into two dimensions using PCA so that the population and
+subject trajectories share the same coordinate system.
+
+The subject trajectory preserves the workload ordering while occupying a
+displaced region of the projected latent space. This visualizes the
+distinction between transferable trajectory structure and subject-specific
+absolute latent position.
+
+
+\begin{figure*}[!t]
+    \centering
+    \includegraphics[width=\textwidth]{figures/fig_trajectory_analysis.png}
+    \caption{Representative latent workload geometry for the same held-out subject. (a) Population and held-out-subject trajectories in a joint two-dimensional PCA projection of the 64-dimensional latent space. (b) Procrustes-aligned trajectories after removing translation, rotation, and scale. The held-out subject preserves the workload ordering while exhibiting subject-specific displacement before alignment and close trajectory-shape correspondence after alignment.}
+    \label{fig:trajectory_analysis}
+\end{figure*}
+
+
+
+% ---------------------------------------------------------
+\subsection{Stage 2: Personal Calibration}
+% ---------------------------------------------------------
+
+The Stage 2 experiment evaluates whether the population representation can
+be personalized using resting-state and known 2-back anchors while keeping
+the FIGNN model frozen.
+
+Across the 29 subjects, the mean population-only 64-dimensional estimation
+error for the unseen 1-back centroid was
+
+\begin{equation}
+\bar{\epsilon}^{pop}=0.072319,
+\end{equation}
+
+whereas the mean calibrated error was
+
+\begin{equation}
+\bar{\epsilon}^{cal}=0.046755.
+\end{equation}
+
+The corresponding mean absolute reduction in error was
+
+\begin{equation}
+0.072319-0.046755=0.025564.
+\end{equation}
+
+This corresponds to a mean relative reduction of approximately 24.06\%.
+Calibration improved the estimation for 22 of the 29 subjects.
+
+\begin{figure*}[!t]
+    \centering
+    \includegraphics[width=\textwidth]
+    {figures/fig_stage2_calibration_error.png}
+    \caption{64-dimensional estimation error for the unseen 1-back latent
+    centroid across 29 held-out subjects. Subject-specific calibration
+    using resting-state and known 2-back anchors reduces estimation error
+    relative to the population-only baseline.}
+    \label{fig:stage2_error}
+\end{figure*}
+
+The result demonstrates that transferability of the population geometry and
+personalization are complementary. The population representation provides a
+common workload structure, while subject-specific information can correct
+displacement of that structure in an unseen individual's latent space.
+
+
+% =========================================================
+\FloatBarrier
+\section{Discussion}
+% =========================================================
+
+The results support a representation-learning view of EEG cognitive
+workload in which transferability does not necessarily require complete
+class separation. FIGNN produces a latent representation in which the
+relative arrangement of workload states is substantially preserved across
+unseen subjects, despite overlap between individual states.
+
+The mean Procrustes similarity of approximately 0.86 provides evidence that
+the three-state trajectory configuration is reasonably stable across
+subjects after removal of translation, scale, and rotation. The fact that
+28 of 29 subjects satisfy $d_{01}<d_{02}$ provides an additional
+interpretable indication that the latent distance from the 0-back state
+generally increases with workload.
+
+At the same time, the low silhouette values observed in the broader
+evaluation demonstrate that the latent representation should not be
+characterized as a conventional well-separated three-class embedding. The
+representation can preserve an ordered workload trajectory even when
+samples belonging to neighboring workload conditions overlap.
+
+The Stage 2 experiment provides a complementary result. A population model
+can establish a transferable workload geometry, but the absolute latent
+location of that geometry can differ for a new individual. Rather than
+retraining FIGNN, the proposed calibration uses subject-specific anchors to
+adapt the population-level estimate. The reduction from 0.072319 to 0.046755
+in mean 64-dimensional estimation error indicates that this geometric
+adaptation can recover a substantial portion of the subject-specific
+displacement.
+
+The combination of the two stages therefore suggests a practical
+population-to-personalization workflow. Population-level representation
+learning establishes a common workload geometry, while limited
+subject-specific measurements provide anchors for adapting that geometry to
+an unseen individual.
+
+
+% =========================================================
+\section{Limitations}
+% =========================================================
+
+Several limitations should be considered.
+
+First, the present study evaluates transferability using latent geometric
+structure rather than demonstrating deployment-level continuous workload
+estimation.
+
+Second, the calibration experiment assumes that resting-state and 2-back
+measurements are available for the new subject. The method therefore
+reduces, rather than eliminates, the requirement for subject-specific
+calibration data.
+
+Third, the latent representation is 64-dimensional and the two-dimensional
+trajectory visualizations are projections. Consequently, visual
+relationships in PCA plots should not be interpreted as quantitative
+evidence about the full latent space. All quantitative distance and
+calibration analyses are performed in the original 64-dimensional space.
+
+Fourth, the Stage 1 silhouette results indicate that the learned
+representation does not produce perfectly separated workload clusters.
+The contribution of FIGNN should therefore be interpreted primarily in terms
+of transferable workload geometry rather than superior classification
+separability.
+
+Finally, the current experiments are based on a single primary dataset and
+should be validated on additional EEG workload datasets and experimental
+protocols to establish broader generalizability.
+
+
+% =========================================================
+\section{Conclusion}
+% =========================================================
+
+This paper presented FIGNN, a Frequency-Informed Graph Neural Network for
+learning transferable EEG workload representations and performing
+subject-specific latent calibration. The model combines relative
+frequency-band power at EEG electrodes with frequency-specific PLV
+connectivity, learnable frequency weighting, and edge-aware graph attention
+to produce a normalized 64-dimensional latent representation.
+
+Using strict 29-fold LOSO evaluation, the learned representation exhibited
+substantial preservation of workload trajectory geometry across unseen
+subjects. The mean Procrustes similarity was approximately 0.860, and
+28 of 29 subjects showed the expected monotonic relationship between
+0-back, 1-back, and 2-back centroid distances.
+
+A second calibration stage demonstrated that this transferable geometry can
+be personalized without retraining the FIGNN model. Using resting-state and
+known 2-back anchors reduced the mean unseen 1-back estimation error from
+0.072319 to 0.046755, with improvement observed in 22 of 29 subjects.
+
+These findings support a two-stage paradigm for EEG workload
+representation: first learn a population-level latent geometry that
+transfers across subjects, and then use limited subject-specific anchors to
+calibrate that geometry for a new individual.
+
+
+% =========================================================
+\section*{Acknowledgment}
+% =========================================================
+
+The author acknowledges the use of the COG-BCI dataset and the support of
+the academic mentors and institutions involved in this research.
+
+In accordance with IEEE policy, the author discloses that ChatGPT
+(OpenAI) was used to assist with manuscript drafting, language editing,
+and organization of the presented material. The scientific methodology,
+experimental implementation, analysis, interpretation of results, and final
+manuscript content were reviewed and verified by the author.
+
+% Replace the acknowledgement above with the exact institutional/project
+% acknowledgement if funding or formal project support applies.
+
+
+% =========================================================
+% References
+% =========================================================
+
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\EOD
+
+\end{document}
