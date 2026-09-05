@@ -272,12 +272,12 @@
 
 %Defining Pantone SpotColor for blue
 \RequirePackage{xcolor}
+
 \ifjtehm
-  \definecolor{accessblue}{cmyk}{.24,1,1,0}
+  \definecolor{accessblue}{cmyk}{1,.35,.03,.21}
   \definecolor{greycolor}{cmyk}{0,0,0,1}
 \else
-  \RequirePackage{xcolor}
-  \definecolor{accessblue}{cmyk}{.24,1,1,0}
+  \definecolor{accessblue}{cmyk}{1,.35,.03,.21}
   \definecolor{greycolor}{cmyk}{0,0,0,.8}
 \fi
 \definecolor{grey}{cmyk}{0,0,0,.1}
@@ -597,7 +597,7 @@
 \def\indextitle{{\color{accessblue}\indexheadfont INDEX TERMS}\ifjtehm\quad\else\space\fi}
 \def\history#1{\gdef\@history{#1}}\let\@history\@empty%
 \def\artnum#1{\gdef\@artnum{#1}}
-\def\doi#1{\gdef\@doi{#1}}
+\def\doi#1{\gdef\@doi{#1}}\let\@doi\@empty
 \def\title#1{\gdef\@title{#1}}
 \def\authorrefmark#1{\textsuperscript{#1}}
 \def\corresp#1{\gdef\@corresp{#1}}\let\@corresp\@empty%
