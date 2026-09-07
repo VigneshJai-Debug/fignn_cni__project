@@ -73,13 +73,8 @@ SAVE_ROOT = (
 # ABLATION SETTINGS
 # ============================================================
 
-# FIRST RUN ONLY 5 FOLDS.
-#
-# Once the pipeline is verified, change this to:
-#
-# ABLATION_SUBJECTS = list(range(1, 30))
-#
-ABLATION_SUBJECTS = [1, 2, 3, 4, 5]
+# FULL 29-FOLD ARCHITECTURE SENSITIVITY RUN
+ABLATION_SUBJECTS = list(range(1, 30))
 
 
 # Same as final LOSO training
@@ -97,7 +92,9 @@ ABLATION_LATENT_DIM = 32
 DROPOUT = 0.3
 
 
-# GPUs available on Brev
+# Four GPUs available on Brev. One fold per GPU at a time.
+# Subjects are scheduled in groups of four. Each worker process is
+# restricted to exactly one physical GPU via CUDA_VISIBLE_DEVICES.
 GPUS = [1, 2, 5, 6]
 
 
@@ -553,16 +550,8 @@ def run_ablation_training(
             )
 
     # --------------------------------------------------------
-    # 6. FINAL MODEL
+    # 6. TRAINING SUMMARY
     # --------------------------------------------------------
-
-    torch.save(
-        model.state_dict(),
-        os.path.join(
-            save_dir,
-            "fignn_final.pth"
-        )
-    )
 
     print(
         f"\nBest val silhouette: "
@@ -577,83 +566,26 @@ def run_ablation_training(
     )
 
     # --------------------------------------------------------
-    # 7. TEST EVALUATION
+    # 7. REQUIRED ABLATION ARTIFACTS ONLY
+    # --------------------------------------------------------
+    #
+    # Keep only:
+    #   fignn_best.pth
+    #   normalisation_stats.pt
+    #   results.txt (written by run_fold)
+    #
+    # We intentionally do NOT save fignn_final.pth,
+    # test_z.npy, test_labels.npy, train_history.npy, or
+    # val_history.npy. The validation notebook reloads the
+    # best checkpoint and recomputes embeddings, so these
+    # extra files are unnecessary for the 29-fold ablation.
     # --------------------------------------------------------
 
-    test_z, test_labels = evaluate(
-        model,
-        test_loader,
-        device
-    )
-
-    try:
-
-        test_sil = silhouette_score(
-            test_z,
-            test_labels
-        )
-
-    except Exception:
-
-        test_sil = 0.0
-
-    print(
-        "\n=== ABLATION LOSO TEST ===",
-        flush=True
-    )
-
-    print(
-        f"Test graphs: {len(test_graphs)}",
-        flush=True
-    )
-
-    print(
-        f"Test silhouette: "
-        f"{test_sil:.4f}",
-        flush=True
-    )
-
-    # Save test embeddings
-    np.save(
-        os.path.join(
-            save_dir,
-            "test_z.npy"
-        ),
-        test_z
-    )
-
-    np.save(
-        os.path.join(
-            save_dir,
-            "test_labels.npy"
-        ),
-        test_labels
-    )
-
-    # Save histories
-    np.save(
-        os.path.join(
-            save_dir,
-            "train_history.npy"
-        ),
-        np.asarray(train_history)
-    )
-
-    np.save(
-        os.path.join(
-            save_dir,
-            "val_history.npy"
-        ),
-        np.asarray(val_history)
-    )
-
     return {
-        "test_silhouette": float(test_sil),
         "best_val_silhouette": float(best_sil),
         "n_parameters": int(n_params),
         "latent_dim": ABLATION_LATENT_DIM
     }
-
 
 # ============================================================
 # ONE LOSO FOLD
@@ -815,10 +747,6 @@ def run_fold(
             f"{results['best_val_silhouette']}\n"
         )
 
-        f.write(
-            f"test_silhouette="
-            f"{results['test_silhouette']}\n"
-        )
 
     print(
         f"\nSUBJECT {subject:02d} COMPLETE",
@@ -839,7 +767,7 @@ def main():
     )
 
     print(
-        "FIGNN ARCHITECTURE ABLATION"
+        "FIGNN ARCHITECTURE ABLATION — FULL 29 FOLDS"
     )
 
     print(
@@ -901,6 +829,9 @@ def main():
                 "w"
             )
 
+            worker_env = os.environ.copy()
+            worker_env["CUDA_VISIBLE_DEVICES"] = str(gpu)
+
             p = subprocess.Popen(
                 [
                     sys.executable,
@@ -910,7 +841,8 @@ def main():
                     str(gpu)
                 ],
                 stdout=log_file,
-                stderr=subprocess.STDOUT
+                stderr=subprocess.STDOUT,
+                env=worker_env
             )
 
             processes.append(
