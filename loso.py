@@ -3,6 +3,7 @@ import sys
 import pickle
 import subprocess
 
+
 PROJECT_DIR = "/home/nvidia/24BCE1793/fignn_cni__project"
 DATA_PATH = "/lp-dev/24BCE1793/data/processed/all_graphs_29sub.pkl"
 SAVE_ROOT = "/lp-dev/24BCE1793/outputs/loso"
@@ -12,6 +13,8 @@ SUBJECTS = list(range(1, 30))
 
 N_EPOCHS = 500
 BATCH_SIZE = 128
+VAL_SPLIT = 0.15
+SEED = 42
 
 os.makedirs(SAVE_ROOT, exist_ok=True)
 
@@ -33,7 +36,7 @@ def run_fold(subject, gpu):
     with open(DATA_PATH, "rb") as f:
         graphs = pickle.load(f)
 
-    # Same Stage-1 setup: remove REST
+    # Stage 1: remove REST
     graphs = [
         g for g in graphs
         if g.y.item() != 3
@@ -78,14 +81,16 @@ def run_fold(subject, gpu):
 
     os.makedirs(fold_dir, exist_ok=True)
 
-    # Reuse your existing Stage-1 training
+    # Training only.
+    # Validation and LOSO evaluation are handled in validation.ipynb.
     run_training(
         train_graphs,
-        test_graphs=test_graphs,
         n_epochs=N_EPOCHS,
         batch_size=BATCH_SIZE,
         lr=1e-3,
-        save_dir=fold_dir
+        save_dir=fold_dir,
+        val_split=VAL_SPLIT,
+        seed=SEED
     )
 
     print(
@@ -95,9 +100,6 @@ def run_fold(subject, gpu):
 
 
 def main():
-
-    # Run 4 folds concurrently.
-    # Then wait for all 4 to finish before launching the next group.
 
     remaining = SUBJECTS.copy()
 
@@ -130,7 +132,7 @@ def main():
 
             log_file = open(log_path, "w")
 
-            p = subprocess.Popen(
+            process = subprocess.Popen(
                 [
                     sys.executable,
                     __file__,
@@ -143,13 +145,13 @@ def main():
             )
 
             processes.append(
-                (subject, p, log_file)
+                (subject, process, log_file)
             )
 
-        # Wait for this group of 4
-        for subject, p, log_file in processes:
+        # Wait for the current group of folds.
+        for subject, process, log_file in processes:
 
-            code = p.wait()
+            code = process.wait()
             log_file.close()
 
             if code != 0:
@@ -167,6 +169,7 @@ def main():
     print("\n" + "=" * 60)
     print("ALL 29 LOSO FOLDS COMPLETE")
     print("=" * 60)
+
 
 if __name__ == "__main__":
 

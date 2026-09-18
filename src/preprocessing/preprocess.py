@@ -26,7 +26,7 @@ FREQ_BANDS = {
 
 EPOCH_DURATION = 2.0   # seconds
 EPOCH_OVERLAP  = 0.0   # seconds (no overlap for now — keeps samples independent)
-PLV_THRESHOLD  = 0.3   # edges below this are pruned when building the graph
+PLV_THRESHOLD  = 0.5   # edges below this are pruned when building the graph
 
 
 def load_and_clean(set_path: str) -> mne.io.Raw:

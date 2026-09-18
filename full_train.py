@@ -1,17 +1,15 @@
 # =============================================================================
 # full_train.py
 # =============================================================================
-# Final population model training
+# Full-dataset population training
 #
-# Train FIGNN on all 29 available subjects.
-#
-# This is NOT an unseen-subject validation experiment.
-# It produces the final frozen population model that can later be applied
-# to a genuinely new subject (e.g. Subject 30).
+# Trains FIGNN on all 29 available subjects.
+# This is not an unseen-subject validation experiment.
 # =============================================================================
 
-import sys
 import os
+import sys
+import json
 import pickle
 import torch
 
@@ -19,20 +17,47 @@ import torch
 # Project paths
 # -------------------------------------------------------------------------
 
-sys.path.insert(0, "/home/nvidia/24BCE1793/fignn_cni__project")
-os.chdir("/home/nvidia/24BCE1793/fignn_cni__project")
-
+PROJECT_ROOT = "/home/nvidia/24BCE1793/fignn_cni__project"
 DATA_PATH = "/lp-dev/24BCE1793/data/processed/all_graphs_29sub.pkl"
 
 CHECKPOINT_DIR = "/lp-dev/24BCE1793/outputs/checkpoints_full"
-PLOT_DIR       = "/lp-dev/24BCE1793/outputs/plots_full"
+PLOT_DIR = "/lp-dev/24BCE1793/outputs/plots_full"
 
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 os.makedirs(PLOT_DIR, exist_ok=True)
 
+sys.path.insert(0, PROJECT_ROOT)
+os.chdir(PROJECT_ROOT)
 
 # -------------------------------------------------------------------------
-# Load all graphs
+# Configuration
+# -------------------------------------------------------------------------
+
+SEED = 42
+N_EPOCHS = 500
+BATCH_SIZE = 128
+LEARNING_RATE = 1e-3
+VAL_SPLIT = 0.15
+
+torch.manual_seed(SEED)
+
+# -------------------------------------------------------------------------
+# GPU check
+# -------------------------------------------------------------------------
+
+print("\nCUDA available:", torch.cuda.is_available(), flush=True)
+
+if torch.cuda.is_available():
+    print("Visible GPU count:", torch.cuda.device_count(), flush=True)
+    print("GPU:", torch.cuda.get_device_name(0), flush=True)
+else:
+    raise RuntimeError(
+        "CUDA is not available. "
+        "Launch with CUDA_VISIBLE_DEVICES=0 or fix the environment."
+    )
+
+# -------------------------------------------------------------------------
+# Load graphs
 # -------------------------------------------------------------------------
 
 print("\nLoading graphs...", flush=True)
@@ -42,71 +67,91 @@ with open(DATA_PATH, "rb") as f:
 
 print(f"Loaded {len(all_graphs)} graphs", flush=True)
 
-
 # -------------------------------------------------------------------------
-# Check dataset
+# Dataset checks
 # -------------------------------------------------------------------------
 
-subjects = sorted(set(g.subject for g in all_graphs))
+subjects = sorted(set(int(g.subject) for g in all_graphs))
+labels = sorted(set(int(g.y.item()) for g in all_graphs))
 
 print(f"\nSubjects: {subjects}", flush=True)
 print(f"Number of subjects: {len(subjects)}", flush=True)
-
-labels = sorted(set(g.y.item() for g in all_graphs))
-
 print(f"Labels present: {labels}", flush=True)
 
 for label in labels:
-    n = sum(g.y.item() == label for g in all_graphs)
-    print(f"Class {label}: {n} graphs", flush=True)
-
+    count = sum(int(g.y.item()) == label for g in all_graphs)
+    print(f"Class {label}: {count} graphs", flush=True)
 
 # -------------------------------------------------------------------------
-# Train final population model
+# Training
 # -------------------------------------------------------------------------
 
 from src.training.train import run_training
-from src.evaluation.evaluate import plot_loss_curve
+# from src.evaluation.evaluate import plot_loss_curve
 
+print("\nStarting full-population training...", flush=True)
 
-model, train_hist, val_hist, _ = run_training(
-
+model, train_hist = run_training(
     train_graphs=all_graphs,
-
-    # No held-out subject.
-    # This is final population training.
-    test_graphs=None,
-
-    n_epochs=500,
-
-    batch_size=128,
-
-    lr=1e-3,
-
-    save_dir=CHECKPOINT_DIR
+    save_dir=CHECKPOINT_DIR,
+    n_epochs=N_EPOCHS,
+    batch_size=BATCH_SIZE,
+    lr=LEARNING_RATE,
+    val_split=VAL_SPLIT,
+    seed=SEED,
 )
+# -------------------------------------------------------------------------
+# Save metadata
+# -------------------------------------------------------------------------
 
+metadata = {
+    "experiment": "full_population_training",
+    "dataset": "COG-BCI",
+    "subjects": subjects,
+    "number_of_subjects": len(subjects),
+    "number_of_graphs": len(all_graphs),
+    "labels": labels,
+    "n_epochs": N_EPOCHS,
+    "batch_size": BATCH_SIZE,
+    "learning_rate": LEARNING_RATE,
+    "validation_split": VAL_SPLIT,
+    "seed": SEED,
+    "note": (
+        "Full-dataset population training; "
+        "not an unseen-subject validation experiment."
+    ),
+}
+
+with open(
+    os.path.join(CHECKPOINT_DIR, "training_metadata.json"),
+    "w",
+    encoding="utf-8",
+) as f:
+    json.dump(metadata, f, indent=2)
 
 # -------------------------------------------------------------------------
 # Save training curve
 # -------------------------------------------------------------------------
 
-plot_loss_curve(
-    train_hist,
-    val_hist,
-    save_path=os.path.join(PLOT_DIR, "full_population_loss_curve.png")
-)
+# if train_hist:
+#     plot_loss_curve(
+#         train_hist,
+#         None,
+#         save_path=os.path.join(
+#             PLOT_DIR,
+#             "full_population_loss_curve.png",
+#         ),
+#     )
 
+# -------------------------------------------------------------------------
+# Completion
+# -------------------------------------------------------------------------
 
 print("\n" + "=" * 70, flush=True)
-print("FINAL POPULATION MODEL TRAINING COMPLETE", flush=True)
+print("FULL POPULATION MODEL TRAINING COMPLETE", flush=True)
 print("=" * 70, flush=True)
 
 print(f"Subjects trained: {len(subjects)}", flush=True)
 print(f"Total graphs: {len(all_graphs)}", flush=True)
-
-print(f"\nCheckpoints saved to:")
-print(CHECKPOINT_DIR, flush=True)
-
-print(f"\nPlots saved to:")
-print(PLOT_DIR, flush=True)
+print(f"\nCheckpoints: {CHECKPOINT_DIR}", flush=True)
+print(f"Plots:       {PLOT_DIR}", flush=True)

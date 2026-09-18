@@ -3,72 +3,196 @@ train.py
 --------
 Training loop for FIGNN Stage 1.
 
-Loss: SupConLoss
-  For each batch, all same-class pairs are pulled together
-  and all different-class pairs are pushed apart simultaneously.
-  More gradient signal per batch than triplet mining.
+The script handles:
+    - Subject-wise train/validation splitting
+    - Training-only normalization
+    - Balanced graph sampling
+    - SupCon training
+    - Periodic checkpoint saving
 
-Why not cross-entropy:
-  We want a meaningful geometry in z-space that generalises to
-  unseen subjects. Cross-entropy overfits to training subjects.
-  Contrastive loss learns structure that holds across people.
-
-Training epochs vs EEG epochs:
-  EEG epochs  = 2-second windows = graph samples (~43,550 total)
-  Training epochs = full passes through the dataset (100 of these)
-  One training epoch = model sees all 43,550 graphs once.
+Evaluation, checkpoint selection, LOSO metrics, q_s, binomial tests,
+and threshold sensitivity are handled separately in validation.ipynb.
 """
 
+import os
+import random
+import numpy as np
 import torch
-import torch.nn as nn
+
 from torch_geometric.loader import DataLoader
 from torch.utils.data import WeightedRandomSampler
 from pytorch_metric_learning.losses import SupConLoss
-import numpy as np
-import os
+
+
+def set_seed(seed=42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def get_subject_id(graph):
+    """
+    Return the subject ID stored on each graph.
+
+    Update this list if the graph builder uses another attribute name.
+    """
+    for name in [
+        "subject_id",
+        "subject",
+        "participant",
+        "participant_id",
+        "subj",
+        "sid"
+    ]:
+        if hasattr(graph, name):
+            value = getattr(graph, name)
+
+            if torch.is_tensor(value):
+                value = value.item()
+
+            return value
+
+    raise AttributeError(
+        "Subject ID not found on graph. "
+        "Store subject metadata on every graph before training."
+    )
+
+
+def make_subjectwise_split(graphs, val_split=0.15, seed=42):
+    """
+    Split graphs by subject.
+
+    All graphs from one subject remain in the same partition.
+    """
+    subject_to_graphs = {}
+
+    for graph in graphs:
+        subject_id = get_subject_id(graph)
+        subject_to_graphs.setdefault(subject_id, []).append(graph)
+
+    subjects = list(subject_to_graphs.keys())
+
+    if len(subjects) < 2:
+        raise ValueError(
+            "Subject-wise validation requires at least two subjects."
+        )
+
+    rng = random.Random(seed)
+    rng.shuffle(subjects)
+
+    n_val_subjects = max(
+        1,
+        int(round(len(subjects) * val_split))
+    )
+
+    n_val_subjects = min(
+        n_val_subjects,
+        len(subjects) - 1
+    )
+
+    val_subjects = set(subjects[:n_val_subjects])
+    train_subjects = set(subjects[n_val_subjects:])
+
+    train_set = [
+        graph
+        for subject_id in train_subjects
+        for graph in subject_to_graphs[subject_id]
+    ]
+
+    val_set = [
+        graph
+        for subject_id in val_subjects
+        for graph in subject_to_graphs[subject_id]
+    ]
+
+    assert train_subjects.isdisjoint(val_subjects)
+
+    print(
+        f"Training subjects: {sorted(train_subjects, key=str)}",
+        flush=True
+    )
+
+    print(
+        f"Validation subjects: {sorted(val_subjects, key=str)}",
+        flush=True
+    )
+
+    print(
+        f"Training graphs: {len(train_set)} | "
+        f"Validation graphs: {len(val_set)}",
+        flush=True
+    )
+
+    return train_set, val_set
 
 
 def compute_dataset_stats(graph_dataset):
-    print("Computing dataset feature statistics...", flush=True)
-    all_x = torch.cat([g.x for g in graph_dataset], dim=0)  # (N, 4)
-    # Relative band power is already in [0,1] — just z-score normalise
-    # No log transform needed since values are already proportions
-    mean = all_x.mean(dim=0)   # (4,)
-    std  = all_x.std(dim=0).clamp(min=1e-8)   # (4,)
-    print(f"  Feature mean: {mean.tolist()}", flush=True)
-    print(f"  Feature std:  {std.tolist()}", flush=True)
+    """
+    Compute normalization statistics using training graphs only.
+    """
+    print(
+        "Computing normalization statistics from training graphs...",
+        flush=True
+    )
+
+    all_x = torch.cat(
+        [graph.x for graph in graph_dataset],
+        dim=0
+    )
+
+    mean = all_x.mean(dim=0)
+    std = all_x.std(dim=0).clamp(min=1e-8)
+
+    print(f"Feature mean: {mean.tolist()}", flush=True)
+    print(f"Feature std:  {std.tolist()}", flush=True)
+
     return mean, std
 
 
 def normalise_dataset(graph_dataset, mean, std):
-    print("Normalising node features (z-score, no log)...", flush=True)
-    for g in graph_dataset:
-        g.x = (g.x - mean) / std
-    print("Done.", flush=True)
+    """
+    Apply the training-subject normalization statistics.
+    """
+    for graph in graph_dataset:
+        graph.x = (graph.x - mean) / std
 
 
 def make_balanced_sampler(dataset):
     """
-    Returns a WeightedRandomSampler that draws equal numbers from each class.
-    Guarantees every batch contains all 3 cognitive load levels.
+    Create a weighted sampler to reduce class imbalance.
     """
-    labels       = [g.y.item() for g in dataset]
-    class_counts = torch.bincount(torch.tensor(labels))
-    weights      = [1.0 / class_counts[l].item() for l in labels]
+    labels = [
+        int(graph.y.item())
+        for graph in dataset
+    ]
+
+    labels = torch.tensor(labels, dtype=torch.long)
+    class_counts = torch.bincount(labels)
+
+    weights = [
+        1.0 / class_counts[label].item()
+        for label in labels.tolist()
+    ]
+
     return WeightedRandomSampler(
-        weights    = weights,
-        num_samples= len(weights),
-        replacement= True
+        weights=torch.tensor(weights, dtype=torch.double),
+        num_samples=len(weights),
+        replacement=True
     )
 
 
 def train_one_epoch(model, loader, optimizer, loss_fn, device):
     model.train()
-    total_loss = 0
-    n_batches  = 0
+
+    total_loss = 0.0
+    n_batches = 0
 
     for batch in loader:
-        batch  = batch.to(device)
+        batch = batch.to(device)
+
         optimizer.zero_grad()
 
         z = model(batch)
@@ -77,88 +201,86 @@ def train_one_epoch(model, loader, optimizer, loss_fn, device):
         loss = loss_fn(z, labels)
 
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
+        torch.nn.utils.clip_grad_norm_(
+            model.parameters(),
+            max_norm=1.0
+        )
+
         optimizer.step()
 
         total_loss += loss.item()
-        n_batches  += 1
+        n_batches += 1
 
     return total_loss / max(n_batches, 1)
 
 
-@torch.no_grad()
-def evaluate(model, loader, device):
+def run_training(
+    train_graphs,
+    test_graphs=None,
+    save_dir="outputs/checkpoints",
+    n_epochs=100,
+    batch_size=64,
+    lr=1e-3,
+    val_split=0.15,
+    seed=42
+):
     """
-    Collect all z vectors and labels for validation / t-SNE.
-    Returns numpy arrays: z (N, 32) and labels (N,).
-    """
-    model.eval()
-    all_z      = []
-    all_labels = []
+    Train FIGNN using a subject-wise validation split.
 
-    for batch in loader:
-        batch = batch.to(device)
-        z     = model(batch).cpu().numpy()
-        all_z.append(z)
-        all_labels.append(batch.y.squeeze().cpu().numpy())
-
-    return np.vstack(all_z), np.concatenate(all_labels)
-
-
-def run_training(train_graphs: list,
-                 test_graphs: list = None,
-                 save_dir  : str   = "outputs/checkpoints",
-                 n_epochs  : int   = 100,
-                 batch_size: int   = 64,
-                 lr        : float = 1e-3,
-                 val_split : float = 0.15):
-    """
-    Full training run.
-
-    Args:
-        graph_dataset : list of PyG Data objects (all subjects, all tasks)
-        save_dir      : where to save model weights
-        n_epochs      : training epochs
-        batch_size    : graphs per batch
-        lr            : learning rate
-        val_split     : fraction held out for validation
+    Evaluation and checkpoint selection are performed separately in
+    validation.ipynb.
     """
     from src.models.model import FIGNNEncoder, count_parameters
 
+    set_seed(seed)
     os.makedirs(save_dir, exist_ok=True)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    device = torch.device(
+        "cuda" if torch.cuda.is_available() else "cpu"
+    )
+
     print(f"Device: {device}", flush=True)
 
-    # ── 1. Normalise node features across full dataset ──────────────────
-    mean, std = compute_dataset_stats(train_graphs)
+    # -------------------------------------------------------------
+    # 1. Subject-wise train/validation split
+    # -------------------------------------------------------------
+
+    train_set, val_set = make_subjectwise_split(
+        train_graphs,
+        val_split=val_split,
+        seed=seed
+    )
+
+    # -------------------------------------------------------------
+    # 2. Training-only normalization
+    # -------------------------------------------------------------
+
+    mean, std = compute_dataset_stats(train_set)
 
     torch.save(
         {
             "mean": mean.cpu(),
             "std": std.cpu()
         },
-        os.path.join(save_dir, "normalisation_stats.pt")
+        os.path.join(
+            save_dir,
+            "normalisation_stats.pt"
+        )
     )
-    
-    normalise_dataset(train_graphs, mean, std)
+
+    normalise_dataset(train_set, mean, std)
+    normalise_dataset(val_set, mean, std)
+
     if test_graphs is not None:
         normalise_dataset(test_graphs, mean, std)
-    # quick check after normalising
-    check = torch.cat([g.x for g in train_graphs[:1000]], dim=0)
-    print(f"Post-norm x mean: {check.mean(dim=0).tolist()}", flush=True)
-    print(f"Post-norm x std:  {check.std(dim=0).tolist()}", flush=True)
 
-    # ── 2. Train / val split ────────────────────────────────────────────
-    n_total = len(train_graphs)
-    n_val   = int(n_total * val_split)
-    n_train = n_total - n_val
-    
-    indices   = torch.randperm(n_total).tolist()
-    train_set = [train_graphs[i] for i in indices[:n_train]]
-    val_set   = [train_graphs[i] for i in indices[n_train:]]
+    # -------------------------------------------------------------
+    # 3. DataLoaders
+    # -------------------------------------------------------------
 
-    # ── 3. DataLoaders ──────────────────────────────────────────────────
-    sampler      = make_balanced_sampler(train_set)
+    sampler = make_balanced_sampler(train_set)
+
     train_loader = DataLoader(
         train_set,
         batch_size=batch_size,
@@ -166,18 +288,8 @@ def run_training(train_graphs: list,
         num_workers=2,
         pin_memory=True
     )
-    
-    test_loader = None
 
-    if test_graphs is not None:
-        test_loader = DataLoader(
-            test_graphs,
-            batch_size=batch_size,
-            shuffle=False,
-            num_workers=2,
-            pin_memory=True
-        )
-    
+    # Kept available for validation.ipynb if needed.
     val_loader = DataLoader(
         val_set,
         batch_size=batch_size,
@@ -186,86 +298,93 @@ def run_training(train_graphs: list,
         pin_memory=True
     )
 
-    # Sanity check — confirm all 3 labels appear in a sample batch
-    sample = next(iter(train_loader))
-    print(f"Sample batch labels: {torch.bincount(sample.y.squeeze())}", flush=True)
-    print(f"Train: {len(train_set)} graphs  |  Val: {len(val_set)} graphs", flush=True)
+    print(
+        f"Train: {len(train_set)} graphs | "
+        f"Val: {len(val_set)} graphs",
+        flush=True
+    )
 
-    # ── 4. Model ────────────────────────────────────────────────────────
-    model     = FIGNNEncoder().to(device)
+    # -------------------------------------------------------------
+    # 4. Model and optimizer
+    # -------------------------------------------------------------
+
+    model = FIGNNEncoder().to(device)
     count_parameters(model)
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=lr,
         weight_decay=1e-4
-    )    
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, 
-        T_max=n_epochs,
-        eta_min=1e-5    # floor — don't decay to zero
     )
-    
-    loss_fn = SupConLoss(temperature=0.1)
 
-    # ── 5. Training loop ────────────────────────────────────────────────
-    best_sil      = -999
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=n_epochs,
+        eta_min=1e-5
+    )
+
+    loss_fn = SupConLoss(
+        temperature=0.1
+    )
+
+    # -------------------------------------------------------------
+    # 5. Training
+    # -------------------------------------------------------------
+
     train_history = []
-    val_history   = []
 
     for epoch in range(1, n_epochs + 1):
-        train_loss = train_one_epoch(model, train_loader, optimizer, loss_fn, device)
+
+        train_loss = train_one_epoch(
+            model,
+            train_loader,
+            optimizer,
+            loss_fn,
+            device
+        )
+
         scheduler.step()
         train_history.append(train_loss)
 
-        # Evaluate every 10 epochs — silhouette on 6k graphs is slow
+        print(
+            f"Epoch {epoch:>3}/{n_epochs} "
+            f"train_loss={train_loss:.4f} "
+            f"lr={scheduler.get_last_lr()[0]:.6f}",
+            flush=True
+        )
+
+        # Save periodic checkpoints.
+        # The validation notebook will select the best one.
         if epoch % 10 == 0 or epoch == 1:
-            val_z, val_labels = evaluate(model, val_loader, device)
-            from sklearn.metrics import silhouette_score
-            try:
-                sil = silhouette_score(val_z, val_labels)
-            except Exception:
-                sil = 0.0
-            val_history.append(sil)
+            torch.save(
+                model.state_dict(),
+                os.path.join(
+                    save_dir,
+                    f"fignn_epoch_{epoch:03d}.pth"
+                )
+            )
 
-            print(f"Epoch {epoch:>3}/{n_epochs}  "
-                  f"train_loss={train_loss:.4f}  "
-                  f"val_silhouette={sil:.3f}  "
-                  f"lr={scheduler.get_last_lr()[0]:.6f}", flush=True)
+    # -------------------------------------------------------------
+    # 6. Save final model
+    # -------------------------------------------------------------
 
-            if sil > best_sil:
-                best_sil = sil
-                torch.save(model.state_dict(), f"{save_dir}/fignn_best.pth")
-        else:
-            print(f"Epoch {epoch:>3}/{n_epochs}  "
-                  f"train_loss={train_loss:.4f}", flush=True)
+    torch.save(
+        model.state_dict(),
+        os.path.join(
+            save_dir,
+            "fignn_final.pth"
+        )
+    )
 
-    # ── 6. Save final weights ───────────────────────────────────────────
-    torch.save(model.state_dict(), f"{save_dir}/fignn_final.pth")
-    print(f"\nBest val silhouette: {best_sil:.3f}", flush=True)
-    print(f"Band importances: {model.get_band_importance()}", flush=True)
+    print(
+        "\nTraining complete.",
+        flush=True
+    )
 
-    test_results = None
+    print(
+        f"Band importances: "
+        f"{model.get_band_importance()}",
+        flush=True
+    )
 
-    if test_loader is not None:
-        test_z, test_labels = evaluate(model, test_loader, device)
-    
-        from sklearn.metrics import silhouette_score
-    
-        try:
-            test_sil = silhouette_score(test_z, test_labels)
-        except Exception:
-            test_sil = 0.0
-    
-        test_results = {
-            "z": test_z,
-            "labels": test_labels,
-            "silhouette": test_sil
-        }
-    
-        print(f"\n=== LOSO TEST ===", flush=True)
-        print(f"Test subject: 29", flush=True)
-        print(f"Test graphs: {len(test_graphs)}", flush=True)
-        print(f"Test silhouette: {test_sil:.4f}", flush=True)
-
-    return model, train_history, val_history, test_results
+    return model, train_history
