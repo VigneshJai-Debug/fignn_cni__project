@@ -8,9 +8,9 @@ The script handles:
     - Training-only normalization
     - Balanced graph sampling
     - SupCon training
-    - Periodic checkpoint saving
+    - Validation-based checkpoint selection
 
-Evaluation, checkpoint selection, LOSO metrics, q_s, binomial tests,
+Evaluation, LOSO metrics, q_s, binomial tests,
 and threshold sensitivity are handled separately in validation.ipynb.
 """
 
@@ -73,7 +73,9 @@ def make_subjectwise_split(graphs, val_split=0.15, seed=42):
         subject_id = get_subject_id(graph)
         subject_to_graphs.setdefault(subject_id, []).append(graph)
 
-    subjects = list(subject_to_graphs.keys())
+    # Explicit sorting ensures the same subject split across runs
+    # regardless of graph insertion order.
+    subjects = sorted(subject_to_graphs.keys())
 
     if len(subjects) < 2:
         raise ValueError(
@@ -146,8 +148,15 @@ def compute_dataset_stats(graph_dataset):
     mean = all_x.mean(dim=0)
     std = all_x.std(dim=0).clamp(min=1e-8)
 
-    print(f"Feature mean: {mean.tolist()}", flush=True)
-    print(f"Feature std:  {std.tolist()}", flush=True)
+    print(
+        f"Feature mean: {mean.tolist()}",
+        flush=True
+    )
+
+    print(
+        f"Feature std:  {std.tolist()}",
+        flush=True
+    )
 
     return mean, std
 
@@ -169,7 +178,11 @@ def make_balanced_sampler(dataset):
         for graph in dataset
     ]
 
-    labels = torch.tensor(labels, dtype=torch.long)
+    labels = torch.tensor(
+        labels,
+        dtype=torch.long
+    )
+
     class_counts = torch.bincount(labels)
 
     weights = [
@@ -178,13 +191,22 @@ def make_balanced_sampler(dataset):
     ]
 
     return WeightedRandomSampler(
-        weights=torch.tensor(weights, dtype=torch.double),
+        weights=torch.tensor(
+            weights,
+            dtype=torch.double
+        ),
         num_samples=len(weights),
         replacement=True
     )
 
 
-def train_one_epoch(model, loader, optimizer, loss_fn, device):
+def train_one_epoch(
+    model,
+    loader,
+    optimizer,
+    loss_fn,
+    device
+):
     model.train()
 
     total_loss = 0.0
@@ -198,7 +220,10 @@ def train_one_epoch(model, loader, optimizer, loss_fn, device):
         z = model(batch)
         labels = batch.y.squeeze()
 
-        loss = loss_fn(z, labels)
+        loss = loss_fn(
+            z,
+            labels
+        )
 
         loss.backward()
 
@@ -212,7 +237,46 @@ def train_one_epoch(model, loader, optimizer, loss_fn, device):
         total_loss += loss.item()
         n_batches += 1
 
-    return total_loss / max(n_batches, 1)
+    return total_loss / max(
+        n_batches,
+        1
+    )
+
+
+@torch.no_grad()
+def validate_one_epoch(
+    model,
+    loader,
+    loss_fn,
+    device
+):
+    """
+    Compute SupCon loss on the subject-wise
+    validation set without updating model parameters.
+    """
+    model.eval()
+
+    total_loss = 0.0
+    n_batches = 0
+
+    for batch in loader:
+        batch = batch.to(device)
+
+        z = model(batch)
+        labels = batch.y.squeeze()
+
+        loss = loss_fn(
+            z,
+            labels
+        )
+
+        total_loss += loss.item()
+        n_batches += 1
+
+    return total_loss / max(
+        n_batches,
+        1
+    )
 
 
 def run_training(
@@ -228,19 +292,34 @@ def run_training(
     """
     Train FIGNN using a subject-wise validation split.
 
-    Evaluation and checkpoint selection are performed separately in
-    validation.ipynb.
+    The best checkpoint is selected using the lowest
+    validation SupCon loss.
+
+    The held-out LOSO test subject is never used for
+    training or checkpoint selection.
     """
-    from src.models.model import FIGNNEncoder, count_parameters
-
-    set_seed(seed)
-    os.makedirs(save_dir, exist_ok=True)
-
-    device = torch.device(
-        "cuda" if torch.cuda.is_available() else "cpu"
+    from src.models.model import (
+        FIGNNEncoder,
+        count_parameters
     )
 
-    print(f"Device: {device}", flush=True)
+    set_seed(seed)
+
+    os.makedirs(
+        save_dir,
+        exist_ok=True
+    )
+
+    device = torch.device(
+        "cuda"
+        if torch.cuda.is_available()
+        else "cpu"
+    )
+
+    print(
+        f"Device: {device}",
+        flush=True
+    )
 
     # -------------------------------------------------------------
     # 1. Subject-wise train/validation split
@@ -256,7 +335,9 @@ def run_training(
     # 2. Training-only normalization
     # -------------------------------------------------------------
 
-    mean, std = compute_dataset_stats(train_set)
+    mean, std = compute_dataset_stats(
+        train_set
+    )
 
     torch.save(
         {
@@ -269,17 +350,34 @@ def run_training(
         )
     )
 
-    normalise_dataset(train_set, mean, std)
-    normalise_dataset(val_set, mean, std)
+    # Apply statistics computed ONLY from training subjects
+    # to train, validation, and held-out test graphs.
+    normalise_dataset(
+        train_set,
+        mean,
+        std
+    )
+
+    normalise_dataset(
+        val_set,
+        mean,
+        std
+    )
 
     if test_graphs is not None:
-        normalise_dataset(test_graphs, mean, std)
+        normalise_dataset(
+            test_graphs,
+            mean,
+            std
+        )
 
     # -------------------------------------------------------------
     # 3. DataLoaders
     # -------------------------------------------------------------
 
-    sampler = make_balanced_sampler(train_set)
+    sampler = make_balanced_sampler(
+        train_set
+    )
 
     train_loader = DataLoader(
         train_set,
@@ -289,7 +387,6 @@ def run_training(
         pin_memory=True
     )
 
-    # Kept available for validation.ipynb if needed.
     val_loader = DataLoader(
         val_set,
         batch_size=batch_size,
@@ -309,7 +406,10 @@ def run_training(
     # -------------------------------------------------------------
 
     model = FIGNNEncoder().to(device)
-    count_parameters(model)
+
+    count_parameters(
+        model
+    )
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -333,7 +433,13 @@ def run_training(
 
     train_history = []
 
-    for epoch in range(1, n_epochs + 1):
+    best_val_loss = float("inf")
+    best_epoch = None
+
+    for epoch in range(
+        1,
+        n_epochs + 1
+    ):
 
         train_loss = train_one_epoch(
             model,
@@ -343,24 +449,44 @@ def run_training(
             device
         )
 
+        val_loss = validate_one_epoch(
+            model,
+            val_loader,
+            loss_fn,
+            device
+        )
+
         scheduler.step()
-        train_history.append(train_loss)
+
+        train_history.append({
+            "epoch": epoch,
+            "train_loss": train_loss,
+            "val_loss": val_loss
+        })
 
         print(
             f"Epoch {epoch:>3}/{n_epochs} "
             f"train_loss={train_loss:.4f} "
+            f"val_loss={val_loss:.4f} "
             f"lr={scheduler.get_last_lr()[0]:.6f}",
             flush=True
         )
 
-        # Save periodic checkpoints.
-        # The validation notebook will select the best one.
-        if epoch % 10 == 0 or epoch == 1:
+        # ---------------------------------------------------------
+        # Best checkpoint
+        # Lowest validation SupCon loss
+        # ---------------------------------------------------------
+
+        if val_loss < best_val_loss:
+
+            best_val_loss = val_loss
+            best_epoch = epoch
+
             torch.save(
                 model.state_dict(),
                 os.path.join(
                     save_dir,
-                    f"fignn_epoch_{epoch:03d}.pth"
+                    "fignn_best.pth"
                 )
             )
 
@@ -378,6 +504,18 @@ def run_training(
 
     print(
         "\nTraining complete.",
+        flush=True
+    )
+
+    print(
+        f"Best validation checkpoint: "
+        f"epoch {best_epoch}, "
+        f"val_loss={best_val_loss:.6f}",
+        flush=True
+    )
+
+    print(
+        f"Final epoch: {n_epochs}",
         flush=True
     )
 

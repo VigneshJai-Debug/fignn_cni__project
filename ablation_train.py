@@ -39,7 +39,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from torch_geometric.loader import DataLoader
-from torch_geometric.nn import global_mean_pool
+from torch_geometric.nn import global_mean_pool, GCNConv
 from torch.utils.data import WeightedRandomSampler
 
 from pytorch_metric_learning.losses import SupConLoss
@@ -85,8 +85,16 @@ BATCH_SIZE = 128
 LEARNING_RATE = 1e-3
 TEMPERATURE = 0.1
 
-TEST_SUBJECT = 29
+# Pre-specified held-out subjects. DO NOT change after inspecting results.
+ABLATION_SUBJECTS = [7, 15, 22, 29]
+
 VAL_SPLIT = 0.15
+
+# One process trains one subject/variant pair. This keeps the old launcher
+# interface and allows the four folds to be distributed across GPUs.
+TEST_SUBJECT = int(
+    os.environ.get("ABLATION_SUBJECT", "29")
+)
 
 VARIANT = os.environ.get(
     "ABLATION_VARIANT",
@@ -108,7 +116,8 @@ VALID_VARIANTS = {
     "full",
     "no_plv",
     "no_band_weight",
-    "no_gat",
+    "node_feature_mlp",
+    "gcn",
     "no_supcon",
     "band_power",
 }
@@ -117,6 +126,12 @@ if VARIANT not in VALID_VARIANTS:
     raise ValueError(
         f"Invalid variant '{VARIANT}'. "
         f"Choose from {sorted(VALID_VARIANTS)}"
+    )
+
+if TEST_SUBJECT not in ABLATION_SUBJECTS:
+    raise ValueError(
+        f"Invalid ablation subject {TEST_SUBJECT}. "
+        f"Use one of the pre-specified subjects: {ABLATION_SUBJECTS}"
     )
 
 
@@ -258,8 +273,10 @@ remaining_graphs = [
     if int(g.subject) != TEST_SUBJECT
 ]
 
-remaining_subjects = sorted(
-    set(
+# Preserve first-seen subject order, matching train.py's
+# make_subjectwise_split() behavior before random.Random(seed).shuffle().
+remaining_subjects = list(
+    dict.fromkeys(
         int(g.subject)
         for g in remaining_graphs
     )
@@ -346,8 +363,45 @@ print(
 )
 
 print(
+    "Train+validation subject pool:",
+    sorted(remaining_subjects),
+    flush=True
+)
+
+print(
+    f"Train+validation subjects: {len(remaining_subjects)} "
+    f"(must be 28 for a 29-subject LOSO fold)",
+    flush=True
+)
+
+print(
     "Test subject:",
     TEST_SUBJECT,
+    flush=True
+)
+
+if len(remaining_subjects) != 28:
+    raise RuntimeError(
+        f"Expected 28 non-test subjects, got {len(remaining_subjects)}"
+    )
+
+if train_subjects & val_subjects:
+    raise RuntimeError("Train/validation subject overlap detected.")
+
+if TEST_SUBJECT in train_subjects or TEST_SUBJECT in val_subjects:
+    raise RuntimeError("Test subject leaked into train/validation.")
+
+if len(train_subjects) + len(val_subjects) != 28:
+    raise RuntimeError(
+        "Train + validation subject count must equal 28."
+    )
+
+print(
+    f"Train subjects: {len(train_subjects)} | "
+    f"Validation subjects: {len(val_subjects)} | "
+    f"Train+validation: "
+    f"{len(train_subjects) + len(val_subjects)} | "
+    f"Test: {TEST_SUBJECT}",
     flush=True
 )
 
@@ -546,12 +600,10 @@ def make_loaders(
 
 
 # =============================================================================
-# NO-GAT ENCODER
+# NODE-FEATURE MLP BASELINE
 # =============================================================================
 
-class NoGATEncoder(
-    nn.Module
-):
+class NodeFeatureMLPEncoder(nn.Module):
 
     def __init__(
         self,
@@ -586,6 +638,95 @@ class NoGATEncoder(
 
         x = self.network(
             data.x
+        )
+
+        z = global_mean_pool(
+            x,
+            data.batch
+        )
+
+        return F.normalize(
+            z,
+            p=2,
+            dim=1
+        )
+
+
+# =============================================================================
+# GCN ENCODER
+#
+# This is the graph-structure baseline. It uses the same node features and
+# graph topology as FIGNN, but replaces attention with ordinary GCN message
+# passing. GCNConv does not use edge_attr, so this tests graph topology
+# without frequency-specific edge weighting.
+# =============================================================================
+
+class GCNEncoder(nn.Module):
+
+    def __init__(
+        self,
+        node_in_dim=4,
+        hidden_dim=128,
+        latent_dim=64
+    ):
+
+        super().__init__()
+
+        self.conv1 = GCNConv(
+            node_in_dim,
+            hidden_dim
+        )
+
+        self.conv2 = GCNConv(
+            hidden_dim,
+            latent_dim
+        )
+
+        self.norm1 = nn.LayerNorm(
+            hidden_dim
+        )
+
+        self.norm2 = nn.LayerNorm(
+            latent_dim
+        )
+
+        self.dropout = nn.Dropout(
+            0.3
+        )
+
+    def forward(
+        self,
+        data
+    ):
+
+        x = self.conv1(
+            data.x,
+            data.edge_index
+        )
+
+        x = self.norm1(
+            x
+        )
+
+        x = F.relu(
+            x
+        )
+
+        x = self.dropout(
+            x
+        )
+
+        x = self.conv2(
+            x,
+            data.edge_index
+        )
+
+        x = self.norm2(
+            x
+        )
+
+        x = F.relu(
+            x
         )
 
         z = global_mean_pool(
@@ -693,9 +834,17 @@ def make_encoder(
 
     from src.models.model import FIGNNEncoder
 
-    if variant == "no_gat":
+    if variant == "node_feature_mlp":
 
-        return NoGATEncoder(
+        return NodeFeatureMLPEncoder(
+            node_in_dim=4,
+            hidden_dim=128,
+            latent_dim=64
+        )
+
+    if variant == "gcn":
+
+        return GCNEncoder(
             node_in_dim=4,
             hidden_dim=128,
             latent_dim=64
@@ -894,13 +1043,101 @@ def classifier_accuracy(
 
 
 # =============================================================================
+# VALIDATION LOSS
+# =============================================================================
+
+@torch.no_grad()
+def evaluate_supcon(
+    model,
+    loader,
+    loss_fn
+):
+
+    model.eval()
+
+    total_loss = 0.0
+    n_batches = 0
+
+    for batch in loader:
+
+        batch = batch.to(
+            DEVICE
+        )
+
+        z = model(
+            batch
+        )
+
+        labels_batch = (
+            batch.y
+            .view(-1)
+            .long()
+        )
+
+        loss = loss_fn(
+            z,
+            labels_batch
+        )
+
+        total_loss += loss.item()
+        n_batches += 1
+
+    return (
+        total_loss / max(n_batches, 1)
+    )
+
+
+@torch.no_grad()
+def evaluate_ce(
+    model,
+    loader
+):
+
+    model.eval()
+
+    criterion = nn.CrossEntropyLoss()
+
+    total_loss = 0.0
+    n_batches = 0
+
+    for batch in loader:
+
+        batch = batch.to(
+            DEVICE
+        )
+
+        logits = model(
+            batch
+        )
+
+        labels_batch = (
+            batch.y
+            .view(-1)
+            .long()
+        )
+
+        loss = criterion(
+            logits,
+            labels_batch
+        )
+
+        total_loss += loss.item()
+        n_batches += 1
+
+    return (
+        total_loss / max(n_batches, 1)
+    )
+
+
+# =============================================================================
 # SAVE CHECKPOINT
 # =============================================================================
 
 def checkpoint_payload(
     model,
     epoch,
-    train_loss
+    train_loss,
+    val_loss
 ):
 
     return {
@@ -909,6 +1146,10 @@ def checkpoint_payload(
         "epoch": epoch,
 
         "train_loss": train_loss,
+
+        "validation_loss": val_loss,
+
+        "checkpoint_selection": "lowest_validation_loss",
 
         "test_subject":
             TEST_SUBJECT,
@@ -949,6 +1190,7 @@ def save_checkpoint(
     model,
     epoch,
     train_loss,
+    val_loss,
     filename
 ):
 
@@ -961,7 +1203,8 @@ def save_checkpoint(
         checkpoint_payload(
             model,
             epoch,
-            train_loss
+            train_loss,
+            val_loss
         ),
         path
     )
@@ -983,7 +1226,7 @@ def run_variant(
     )
 
     print(
-        f"STARTING: {variant}",
+        f"STARTING: {variant} | TEST SUBJECT: {TEST_SUBJECT}",
         flush=True
     )
 
@@ -1029,7 +1272,7 @@ def run_variant(
     elif variant == "no_supcon":
 
         encoder = make_encoder(
-            variant
+            "full"
         )
 
         model = EmbeddingClassifier(
@@ -1077,18 +1320,42 @@ def run_variant(
         )
 
     # ---------------------------------------------------------
-    # Best = LOWEST TRAINING LOSS
+    # Best checkpoint = LOWEST VALIDATION LOSS
+    #
+    # This matches the corrected main LOSO checkpoint-selection logic.
+    # The training loss is logged but NEVER used to choose the checkpoint.
     # ---------------------------------------------------------
 
-    best_train_loss = float(
+    best_val_loss = float(
         "inf"
     )
 
+    best_train_loss = None
     best_epoch = None
 
-    best_path = os.path.join(
+    subject_output_dir = os.path.join(
         OUTPUT_DIR,
+        f"subject_{TEST_SUBJECT:02d}"
+    )
+
+    os.makedirs(
+        subject_output_dir,
+        exist_ok=True
+    )
+
+    best_path = os.path.join(
+        subject_output_dir,
         f"{variant}_best.pt"
+    )
+
+    history_path = os.path.join(
+        subject_output_dir,
+        f"{variant}_history.json"
+    )
+
+    result_path = os.path.join(
+        subject_output_dir,
+        f"{variant}_result.json"
     )
 
     history = []
@@ -1112,6 +1379,12 @@ def run_variant(
                 loss_fn
             )
 
+            val_loss = evaluate_supcon(
+                model,
+                val_loader,
+                loss_fn
+            )
+
         else:
 
             train_loss = train_ce(
@@ -1121,10 +1394,16 @@ def run_variant(
                 scheduler
             )
 
+            val_loss = evaluate_ce(
+                model,
+                val_loader
+            )
+
         history.append(
             {
                 "epoch": epoch,
-                "train_loss": train_loss
+                "train_loss": train_loss,
+                "validation_loss": val_loss
             }
         )
 
@@ -1132,17 +1411,18 @@ def run_variant(
         # Best checkpoint
         # -----------------------------------------------------
 
-        if train_loss < best_train_loss:
+        if val_loss < best_val_loss:
 
+            best_val_loss = val_loss
             best_train_loss = train_loss
-
             best_epoch = epoch
 
             save_checkpoint(
                 model,
                 epoch,
                 train_loss,
-                f"{variant}_best.pt"
+                val_loss,
+                best_path
             )
 
         # -----------------------------------------------------
@@ -1158,7 +1438,8 @@ def run_variant(
             print(
                 f"Epoch {epoch:3d}/{N_EPOCHS} "
                 f"| train_loss={train_loss:.6f} "
-                f"| best={best_train_loss:.6f} "
+                f"| val_loss={val_loss:.6f} "
+                f"| best_val={best_val_loss:.6f} "
                 f"| best_epoch={best_epoch}",
                 flush=True
             )
@@ -1167,21 +1448,24 @@ def run_variant(
     # Final checkpoint
     # ---------------------------------------------------------
 
-    final_path = save_checkpoint(
+    final_path = os.path.join(
+        subject_output_dir,
+        f"{variant}_model.pt"
+    )
+
+    final_val_loss = history[-1]["validation_loss"]
+
+    save_checkpoint(
         model,
         N_EPOCHS,
         history[-1]["train_loss"],
-        f"{variant}_model.pt"
+        final_val_loss,
+        final_path
     )
 
     # ---------------------------------------------------------
     # Save training history
     # ---------------------------------------------------------
-
-    history_path = os.path.join(
-        OUTPUT_DIR,
-        f"{variant}_history.json"
-    )
 
     with open(
         history_path,
@@ -1192,10 +1476,20 @@ def run_variant(
         json.dump(
             {
                 "variant": variant,
+                "test_subject": TEST_SUBJECT,
+                "train_validation_subject_count":
+                    len(train_subjects) + len(val_subjects),
+                "train_subject_count":
+                    len(train_subjects),
+                "validation_subject_count":
+                    len(val_subjects),
                 "best_epoch": best_epoch,
+                "best_validation_loss": best_val_loss,
                 "best_train_loss": best_train_loss,
                 "final_train_loss":
                     history[-1]["train_loss"],
+                "final_validation_loss":
+                    final_val_loss,
                 "history": history,
             },
             f,
@@ -1241,7 +1535,28 @@ def run_variant(
     )
 
     print(
-        f"{variant} COMPLETE",
+        f"{variant} COMPLETE | TEST SUBJECT {TEST_SUBJECT}",
+        flush=True
+    )
+
+    print(
+        f"Train+validation subjects: "
+        f"{len(train_subjects) + len(val_subjects)}",
+        flush=True
+    )
+
+    print(
+        f"Train subjects: {len(train_subjects)}",
+        flush=True
+    )
+
+    print(
+        f"Validation subjects: {len(val_subjects)}",
+        flush=True
+    )
+
+    print(
+        f"Test subject: {TEST_SUBJECT}",
         flush=True
     )
 
@@ -1251,14 +1566,14 @@ def run_variant(
     )
 
     print(
-        f"Best train loss: "
-        f"{best_train_loss:.6f}",
+        f"Best validation loss: "
+        f"{best_val_loss:.6f}",
         flush=True
     )
 
     print(
-        f"Final train loss: "
-        f"{history[-1]['train_loss']:.6f}",
+        f"Training loss at best epoch: "
+        f"{best_train_loss:.6f}",
         flush=True
     )
 
@@ -1289,11 +1604,6 @@ def run_variant(
     # Result metadata
     # ---------------------------------------------------------
 
-    result_path = os.path.join(
-        OUTPUT_DIR,
-        f"{variant}_result.json"
-    )
-
     with open(
         result_path,
         "w",
@@ -1307,6 +1617,9 @@ def run_variant(
                 "test_subject":
                     TEST_SUBJECT,
 
+                "ablation_subject_set":
+                    ABLATION_SUBJECTS,
+
                 "labels":
                     labels,
 
@@ -1315,6 +1628,15 @@ def run_variant(
 
                 "rest_removed":
                     True,
+
+                "train_validation_subject_count":
+                    len(train_subjects) + len(val_subjects),
+
+                "train_subject_count":
+                    len(train_subjects),
+
+                "validation_subject_count":
+                    len(val_subjects),
 
                 "train_subjects":
                     sorted(train_subjects),
@@ -1337,14 +1659,23 @@ def run_variant(
                 "training_mode":
                     training_mode,
 
+                "checkpoint_selection":
+                    "lowest_validation_loss",
+
                 "best_epoch":
                     best_epoch,
+
+                "best_validation_loss":
+                    best_val_loss,
 
                 "best_train_loss":
                     best_train_loss,
 
                 "final_train_loss":
                     history[-1]["train_loss"],
+
+                "final_validation_loss":
+                    final_val_loss,
 
                 "validation_accuracy":
                     val_acc,
@@ -1364,11 +1695,49 @@ def run_variant(
 # RUN
 # =============================================================================
 
-run_variant(
-    VARIANT
-)
-
 print(
-    f"\nFinished variant: {VARIANT}",
+    "\nPRE-FLIGHT PROTOCOL CHECK",
     flush=True
 )
+print(
+    f"Test subject: {TEST_SUBJECT}",
+    flush=True
+)
+print(
+    f"Remaining subjects (train+validation): "
+    f"{len(remaining_subjects)}",
+    flush=True
+)
+print(
+    f"Train subjects: {len(train_subjects)}",
+    flush=True
+)
+print(
+    f"Validation subjects: {len(val_subjects)}",
+    flush=True
+)
+print(
+    f"Train + validation = "
+    f"{len(train_subjects) + len(val_subjects)}",
+    flush=True
+)
+
+assert len(remaining_subjects) == 28
+assert len(train_subjects) == 24
+assert len(val_subjects) == 4
+assert len(train_subjects) + len(val_subjects) == 28
+assert TEST_SUBJECT not in train_subjects
+assert TEST_SUBJECT not in val_subjects
+assert train_subjects.isdisjoint(val_subjects)
+
+if __name__ == "__main__":
+
+    run_variant(
+        VARIANT
+    )
+
+    print(
+        f"\nFinished variant: {VARIANT} | "
+        f"test subject: {TEST_SUBJECT}",
+        flush=True
+    )

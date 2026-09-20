@@ -49,8 +49,6 @@ from torch_geometric.loader import DataLoader
 from torch.utils.data import WeightedRandomSampler
 from pytorch_metric_learning.losses import SupConLoss
 
-from sklearn.metrics import silhouette_score
-
 
 # ============================================================
 # PATHS
@@ -471,7 +469,7 @@ def run_ablation_training(
     # 5. TRAINING
     # --------------------------------------------------------
 
-    best_sil = -999.0
+    best_val_loss = float("inf")
 
     train_history = []
     val_history = []
@@ -495,44 +493,34 @@ def run_ablation_training(
             train_loss
         )
 
-        if (
-            epoch % 10 == 0
-            or epoch == 1
-        ):
-
-            val_z, val_labels = evaluate(
-                model,
-                val_loader,
-                device
-            )
-
-            try:
-
-                sil = silhouette_score(
-                    val_z,
-                    val_labels
-                )
-
-            except Exception:
-
-                sil = 0.0
-
-            val_history.append(
-                sil
-            )
-
+        if epoch % 10 == 0 or epoch == 1:
+        
+            model.eval()
+            val_loss_total = 0.0
+            val_batches = 0
+        
+            with torch.no_grad():
+                for batch in val_loader:
+                    batch = batch.to(device)
+                    z = model(batch)
+                    val_loss = loss_fn(z, batch.y.squeeze())
+                    val_loss_total += val_loss.item()
+                    val_batches += 1
+        
+            val_loss = val_loss_total / max(val_batches, 1)
+            val_history.append(val_loss)
+        
             print(
                 f"Epoch {epoch:>3}/{N_EPOCHS}  "
                 f"train_loss={train_loss:.4f}  "
-                f"val_silhouette={sil:.3f}  "
+                f"val_loss={val_loss:.4f}  "
                 f"lr={scheduler.get_last_lr()[0]:.6f}",
                 flush=True
             )
-
-            if sil > best_sil:
-
-                best_sil = sil
-
+        
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+        
                 torch.save(
                     model.state_dict(),
                     os.path.join(
@@ -540,7 +528,6 @@ def run_ablation_training(
                         "fignn_best.pth"
                     )
                 )
-
         else:
 
             print(
@@ -554,8 +541,8 @@ def run_ablation_training(
     # --------------------------------------------------------
 
     print(
-        f"\nBest val silhouette: "
-        f"{best_sil:.3f}",
+        f"\nBest val SupCon loss: "
+        f"{best_val_loss:.4f}",
         flush=True
     )
 
@@ -582,7 +569,7 @@ def run_ablation_training(
     # --------------------------------------------------------
 
     return {
-        "best_val_silhouette": float(best_sil),
+        "best_val_loss": float(best_val_loss),
         "n_parameters": int(n_params),
         "latent_dim": ABLATION_LATENT_DIM
     }
@@ -743,8 +730,8 @@ def run_fold(
         )
 
         f.write(
-            f"best_val_silhouette="
-            f"{results['best_val_silhouette']}\n"
+            f"best_val_loss="
+            f"{results['best_val_loss']}\n"
         )
 
 
