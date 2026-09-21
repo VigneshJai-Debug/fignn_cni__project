@@ -1,1033 +1,255 @@
-# ============================================================
-# STAGE 2 — 64-D UNSEEN-SUBJECT CALIBRATION COMPARISON
-#
-# Question:
-# Does subject-specific REST + 2-back calibration improve
-# estimation of an unseen subject's true 1-back latent centroid?
-#
-# Comparison:
-#
-# BASELINE:
-#     Predict unseen subject's 1-back using only the population
-#     1-back centroid from the 28 training subjects.
-#
-# CALIBRATED:
-#     Use unseen subject's REST and 2-back centroids as personal
-#     anchors, and place predicted 1-back at the population-derived
-#     relative position along that subject's REST → 2-back vector.
-#
-# Evaluation:
-#     Direct Euclidean error in original 64-D latent space.
-# ============================================================
+"""Stage 2 — 64-D unseen-subject calibration comparison.
 
+Methods:
+    population_only, midpoint, regression, frozen_geometric.
+
+Each LOSO fold uses the authoritative fold-specific fignn_best.pth and
+normalisation_stats.pt. Errors are direct Euclidean distances in the original
+64-D latent space.
+"""
 
 import os
-import re
-import glob
 import pickle
 import copy
+import sys
 
 import numpy as np
 import pandas as pd
 import torch
-
+from scipy.stats import wilcoxon, ttest_rel
 from torch_geometric.loader import DataLoader
 
-import sys
-
-
-# ============================================================
-# PATHS
-# ============================================================
-
-PROJECT_ROOT = "/lp-dev/24BCE1793/fignn_cni__project"
-
-GRAPHS_PATH = (
-    "/lp-dev/24BCE1793/data/processed/"
-    "all_graphs_29sub.pkl"
-)
-
-LOSO_ROOT = (
-    "/lp-dev/24BCE1793/outputs/loso"
-)
-
-OUTPUT_PATH = (
-    "/lp-dev/24BCE1793/outputs/"
-    "stage2_calibration_comparison_64D.csv"
-)
-
+PROJECT_ROOT = "/home/nvidia/24BCE1793/fignn_cni__project"
+GRAPHS_PATH = "/lp-dev/24BCE1793/data/processed/all_graphs_29sub.pkl"
+LOSO_ROOT = "/lp-dev/24BCE1793/outputs/loso"
+OUTPUT_PATH = "/lp-dev/24BCE1793/outputs/stage2_calibration_comparison_64D.csv"
 
 sys.path.insert(0, PROJECT_ROOT)
-
 from src.models.model import FIGNNEncoder
 
-
-# ============================================================
-# LOAD ALL GRAPHS
-# ============================================================
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+METHODS = ["population_only", "midpoint", "regression", "frozen_geometric"]
 
 print("Loading graphs...")
-
 with open(GRAPHS_PATH, "rb") as f:
     all_graphs = pickle.load(f)
-
 print(f"Loaded {len(all_graphs)} graphs")
+print(f"Using device: {DEVICE}")
 
 
-# ============================================================
-# FIND LOSO CHECKPOINTS
-# ============================================================
-
-checkpoint_files = glob.glob(
-    os.path.join(
-        LOSO_ROOT,
-        "**",
-        "fignn_final.pth"
-    ),
-    recursive=True
-)
-
-if len(checkpoint_files) == 0:
-    raise FileNotFoundError(
-        f"No LOSO checkpoints found under:\n{LOSO_ROOT}"
-    )
+def load_fold_normalisation(test_subject):
+    stats_path = os.path.join(LOSO_ROOT, f"subject_{test_subject:02d}", "normalisation_stats.pt")
+    if not os.path.exists(stats_path):
+        raise FileNotFoundError(stats_path)
+    stats = torch.load(stats_path, map_location="cpu")
+    return stats["mean"].float(), stats["std"].float().clamp(min=1e-8)
 
 
-subject_checkpoints = {}
+def load_fold_model(test_subject):
+    checkpoint_path = os.path.join(LOSO_ROOT, f"subject_{test_subject:02d}", "fignn_best.pth")
+    if not os.path.exists(checkpoint_path):
+        raise FileNotFoundError(checkpoint_path)
+    model = FIGNNEncoder().to(DEVICE)
+    state_dict = torch.load(checkpoint_path, map_location=DEVICE)
+    if isinstance(state_dict, dict):
+        if "state_dict" in state_dict:
+            state_dict = state_dict["state_dict"]
+        elif "model_state_dict" in state_dict:
+            state_dict = state_dict["model_state_dict"]
+    model.load_state_dict(state_dict)
+    model.eval()
+    for p in model.parameters():
+        p.requires_grad = False
+    return model, checkpoint_path
 
-for path in checkpoint_files:
-
-    match = re.search(
-        r"subject[_-]?(\d+)",
-        path,
-        re.IGNORECASE
-    )
-
-    if match:
-
-        subject = int(match.group(1))
-
-        subject_checkpoints[subject] = path
-
-
-print(
-    f"\nFound {len(subject_checkpoints)} "
-    f"LOSO checkpoints"
-)
-
-
-# ============================================================
-# COMPUTE NORMALISATION STATISTICS
-#
-# IMPORTANT:
-# Each LOSO fold gets statistics computed ONLY from its
-# 28 training subjects.
-#
-# This avoids leakage from the unseen test subject.
-# ============================================================
-
-def compute_train_stats(graphs):
-
-    all_x = torch.cat(
-        [g.x for g in graphs],
-        dim=0
-    )
-
-    mean = all_x.mean(dim=0)
-
-    std = (
-        all_x.std(dim=0)
-        .clamp(min=1e-8)
-    )
-
-    return mean, std
-
-
-# ============================================================
-# EXTRACT 64-D EMBEDDINGS
-# ============================================================
 
 @torch.no_grad()
-def get_embeddings(
-    model,
-    graphs,
-    mean,
-    std,
-    device,
-    batch_size=128
-):
-
+def get_embeddings(model, graphs, mean, std, device=DEVICE, batch_size=128):
     processed = []
-
     for g in graphs:
-
         g_copy = copy.copy(g)
-
-        g_copy.x = (
-            g.x.clone() - mean
-        ) / std
-
+        g_copy.x = (g.x.clone() - mean) / std
         processed.append(g_copy)
 
-
-    loader = DataLoader(
-        processed,
-        batch_size=batch_size,
-        shuffle=False
-    )
-
+    loader = DataLoader(processed, batch_size=batch_size, shuffle=False, num_workers=0)
 
     model.eval()
-
     all_z = []
     all_y = []
 
-
     for batch in loader:
-
         batch = batch.to(device)
-
         z = model(batch)
+        all_z.append(z.cpu().numpy())
+        all_y.append(batch.y.view(-1).cpu().numpy())
 
-        all_z.append(
-            z.cpu().numpy()
-        )
+    return np.vstack(all_z), np.concatenate(all_y)
 
-        all_y.append(
-            batch.y
-            .view(-1)
-            .cpu()
-            .numpy()
-        )
-
-
-    return (
-        np.vstack(all_z),
-        np.concatenate(all_y)
-    )
-
-
-# ============================================================
-# CONDITION CENTROIDS
-# ============================================================
 
 def get_condition_centroids(z, y):
-
     centroids = {}
 
-    for label, name in [
-        (3, "REST"),
-        (0, "0B"),
-        (1, "1B"),
-        (2, "2B")
-    ]:
+    for label, name in [(3, "REST"), (0, "0B"), (1, "1B"), (2, "2B")]:
+        mask = y == label
 
-        condition_z = z[y == label]
+        if not np.any(mask):
+            raise ValueError(f"No samples found for condition {name}")
 
-        if len(condition_z) == 0:
-
-            raise ValueError(
-                f"No samples found for {name}"
-            )
-
-        centroids[name] = (
-            condition_z.mean(axis=0)
-        )
-
+        centroids[name] = z[mask].mean(axis=0)
 
     return centroids
 
 
-# ============================================================
-# POPULATION RELATIVE 1-BACK POSITION
-#
-# For each training subject:
-#
-#     REST -----> 2B
-#
-# We project that subject's 1B centroid onto their
-# REST → 2B direction.
-#
-# alpha = 0:
-#     exactly REST
-#
-# alpha = 1:
-#     exactly 2-back
-#
-# alpha between:
-#     intermediate workload position
-#
-# We then take the mean alpha across the 28 training subjects.
-# ============================================================
-
-def projection_position(
-    rest,
-    target,
-    two_back
-):
-
-    direction = (
-        two_back - rest
-    )
-
-    numerator = np.dot(
-        target - rest,
-        direction
-    )
-
-    denominator = np.dot(
-        direction,
-        direction
-    )
-
-    if denominator < 1e-12:
+def projection_position(rest, target, two_back):
+    direction = two_back - rest
+    denom = np.dot(direction, direction)
+    if denom < 1e-12:
         return np.nan
+    return float(np.dot(target - rest, direction) / denom)
 
 
-    alpha = (
-        numerator / denominator
-    )
-
-    return alpha
+def population_only_prediction(train_centroids):
+    return np.mean([c["1B"] for c in train_centroids], axis=0)
 
 
-# ============================================================
-# DEVICE
-# ============================================================
-
-device = torch.device(
-    "cuda"
-    if torch.cuda.is_available()
-    else "cpu"
-)
-
-print(f"Using device: {device}")
+def midpoint_prediction(true_rest, true_two_back):
+    return true_rest + 0.5 * (true_two_back - true_rest)
 
 
-# ============================================================
-# MAIN LOSO STAGE 2
-# ============================================================
-
-results = []
-
-
-for test_subject in sorted(subject_checkpoints):
-
-
-    print(
-        f"\n{'='*65}"
-    )
-
-    print(
-        f"Processing unseen Subject "
-        f"{test_subject}"
-    )
-
-    print(
-        f"{'='*65}"
-    )
+def regression_prediction(train_centroids, true_rest, true_two_back):
+    x = np.asarray([np.concatenate([c["REST"], c["2B"]]) for c in train_centroids], dtype=np.float64)
+    y = np.asarray([c["1B"] for c in train_centroids], dtype=np.float64)
+    x_test = np.concatenate([true_rest, true_two_back]).astype(np.float64)
+    x_aug = np.column_stack([np.ones(len(x)), x])
+    test_aug = np.concatenate([[1.0], x_test])
+    coef, _, _, _ = np.linalg.lstsq(x_aug, y, rcond=None)
+    return test_aug @ coef
 
 
-    # --------------------------------------------------------
-    # TRAIN / TEST SPLIT
-    # --------------------------------------------------------
+def frozen_geometric_prediction(train_centroids, true_rest, true_two_back):
+    alpha_values = [projection_position(c["REST"], c["1B"], c["2B"]) for c in train_centroids]
+    alpha_values = [a for a in alpha_values if np.isfinite(a)]
+    if not alpha_values:
+        raise ValueError("Could not calculate population alpha.")
+    alpha_population = float(np.mean(alpha_values))
+    return true_rest + alpha_population * (true_two_back - true_rest), alpha_population
 
-    train_graphs = [
-
-        g for g in all_graphs
-
-        if g.subject != test_subject
-
-    ]
-
-
-    test_graphs = [
-
-        g for g in all_graphs
-
-        if g.subject == test_subject
-
-    ]
-
-
-    train_subjects = sorted(
-        set(
-            g.subject
-            for g in train_graphs
+def main():
+    results = []
+    
+    for test_subject in range(1, 30):
+        print("\n" + "=" * 70)
+        print(f"Processing unseen Subject {test_subject:02d}")
+        print("=" * 70)
+    
+        train_graphs = [g for g in all_graphs if int(g.subject) != test_subject]
+        test_graphs = [g for g in all_graphs if int(g.subject) == test_subject]
+        train_subjects = sorted({int(g.subject) for g in train_graphs})
+        if len(train_subjects) != 28:
+            raise ValueError(f"Expected 28 training subjects, got {len(train_subjects)}")
+    
+        mean, std = load_fold_normalisation(test_subject)
+        model, checkpoint_path = load_fold_model(test_subject)
+    
+        train_subject_centroids = []
+        for sid in train_subjects:
+            sid_graphs = [g for g in train_graphs if int(g.subject) == sid]
+            z_sid, y_sid = get_embeddings(model, sid_graphs, mean, std)
+            train_subject_centroids.append(get_condition_centroids(z_sid, y_sid))
+    
+        z_test, y_test = get_embeddings(model, test_graphs, mean, std)
+        test_centroids = get_condition_centroids(z_test, y_test)
+        true_rest = test_centroids["REST"]
+        true_1b = test_centroids["1B"]
+        true_2b = test_centroids["2B"]
+    
+        predictions = {
+            "population_only": population_only_prediction(train_subject_centroids),
+            "midpoint": midpoint_prediction(true_rest, true_2b),
+            "regression": regression_prediction(train_subject_centroids, true_rest, true_2b),
+        }
+        frozen_prediction, alpha_population = frozen_geometric_prediction(
+            train_subject_centroids, true_rest, true_2b
         )
-    )
-
-
-    # --------------------------------------------------------
-    # COMPUTE FOLD-SPECIFIC NORMALISATION
-    #
-    # ONLY training subjects
-    # --------------------------------------------------------
-
-    mean, std = compute_train_stats(
-        train_graphs
-    )
-
-
-    # --------------------------------------------------------
-    # LOAD FROZEN LOSO MODEL
-    # --------------------------------------------------------
-
-    checkpoint_path = (
-        subject_checkpoints[
-            test_subject
-        ]
-    )
-
-
-    model = (
-        FIGNNEncoder()
-        .to(device)
-    )
-
-
-    state_dict = torch.load(
-        checkpoint_path,
-        map_location=device
-    )
-
-
-    model.load_state_dict(
-        state_dict
-    )
-
-
-    model.eval()
-
-
-    # --------------------------------------------------------
-    # GENERATE TRAINING POPULATION EMBEDDINGS
-    #
-    # REST + 0B + 1B + 2B
-    #
-    # The model itself was trained only on task classes,
-    # but REST is passed through the frozen encoder here
-    # purely as a calibration anchor.
-    # --------------------------------------------------------
-
-    train_z, train_y = get_embeddings(
-
-        model,
-        train_graphs,
-        mean,
-        std,
-        device
-
-    )
-
-
-    # --------------------------------------------------------
-    # GET EACH TRAIN SUBJECT'S CONDITION CENTROIDS
-    #
-    # We need subject-level centroids to calculate the
-    # population-relative position of 1B between REST and 2B.
-    # --------------------------------------------------------
-
-    train_subject_centroids = []
-
-
-    for subject in train_subjects:
-
-
-        subject_graphs = [
-
-            g for g in train_graphs
-
-            if g.subject == subject
-
-        ]
-
-
-        z_sub, y_sub = get_embeddings(
-
-            model,
-            subject_graphs,
-            mean,
-            std,
-            device
-
-        )
-
-
-        centroids = (
-            get_condition_centroids(
-                z_sub,
-                y_sub
-            )
-        )
-
-
-        train_subject_centroids.append(
-            centroids
-        )
-
-
-    # --------------------------------------------------------
-    # POPULATION 1-BACK CENTROID
-    #
-    # BASELINE PREDICTION:
-    #
-    # No personal information from unseen subject.
-    # --------------------------------------------------------
-
-    population_1B = np.mean(
-
-        [
-            c["1B"]
-
-            for c in
-            train_subject_centroids
-        ],
-
-        axis=0
-
-    )
-
-
-    # --------------------------------------------------------
-    # LEARN POPULATION RELATIVE POSITION OF 1B
-    #
-    # alpha_i =
-    #
-    # projection of subject i's 1B
-    # onto their REST → 2B direction
-    #
-    # Then:
-    #
-    # alpha_population = mean(alpha_i)
-    # --------------------------------------------------------
-
-    alpha_values = []
-
-
-    for c in train_subject_centroids:
-
-
-        alpha = projection_position(
-
-            c["REST"],
-            c["1B"],
-            c["2B"]
-
-        )
-
-
-        if not np.isnan(alpha):
-
-            alpha_values.append(
-                alpha
-            )
-
-
-    alpha_population = float(
-        np.mean(alpha_values)
-    )
-
-
-    alpha_median = float(
-        np.median(alpha_values)
-    )
-
-
-    # --------------------------------------------------------
-    # OPTIONAL:
-    #
-    # Also compute median-alpha calibrated prediction.
-    #
-    # Mean alpha is the primary result.
-    # Median is useful because alpha can occasionally
-    # be affected by outlier subjects.
-    # --------------------------------------------------------
-
-
-    # ========================================================
-    # UNSEEN SUBJECT
-    # ========================================================
-
-    test_z, test_y = get_embeddings(
-
-        model,
-        test_graphs,
-        mean,
-        std,
-        device
-
-    )
-
-
-    test_centroids = (
-        get_condition_centroids(
-            test_z,
-            test_y
-        )
-    )
-
-
-    true_rest = (
-        test_centroids["REST"]
-    )
-
-    true_1B = (
-        test_centroids["1B"]
-    )
-
-    true_2B = (
-        test_centroids["2B"]
-    )
-
-
-    # ========================================================
-    # BASELINE — NO CALIBRATION
-    # ========================================================
-
-    baseline_prediction = (
-        population_1B
-    )
-
-
-    # ========================================================
-    # CALIBRATED PREDICTION
-    #
-    # predicted_1B =
-    #
-    # REST_subject
-    # +
-    # alpha_population
-    # *
-    # (2B_subject - REST_subject)
-    #
-    # This produces a complete 64-D predicted vector.
-    # ========================================================
-
-    calibrated_prediction = (
-
-        true_rest
-
-        +
-
-        alpha_population
-        *
-        (
-            true_2B
-            -
-            true_rest
-        )
-
-    )
-
-
-    # --------------------------------------------------------
-    # MEDIAN VERSION
-    # --------------------------------------------------------
-
-    calibrated_prediction_median = (
-
-        true_rest
-
-        +
-
-        alpha_median
-        *
-        (
-            true_2B
-            -
-            true_rest
-        )
-
-    )
-
-
-    # ========================================================
-    # 64-D EUCLIDEAN ERRORS
-    # ========================================================
-
-    baseline_error = float(
-
-        np.linalg.norm(
-
-            baseline_prediction
-            -
-            true_1B
-
-        )
-
-    )
-
-
-    calibrated_error = float(
-
-        np.linalg.norm(
-
-            calibrated_prediction
-            -
-            true_1B
-
-        )
-
-    )
-
-
-    calibrated_error_median = float(
-
-        np.linalg.norm(
-
-            calibrated_prediction_median
-            -
-            true_1B
-
-        )
-
-    )
-
-
-    # --------------------------------------------------------
-    # IMPROVEMENT
-    # --------------------------------------------------------
-
-    absolute_improvement = (
-
-        baseline_error
-        -
-        calibrated_error
-
-    )
-
-
-    if baseline_error > 1e-12:
-
-        percent_improvement = (
-
-            absolute_improvement
-            /
-            baseline_error
-
-        ) * 100
-
-    else:
-
-        percent_improvement = np.nan
-
-
-    # --------------------------------------------------------
-    # SAVE
-    # --------------------------------------------------------
-
-    results.append({
-
-        "Subject":
-            test_subject,
-
-        "population_alpha_mean":
-            alpha_population,
-
-        "population_alpha_median":
-            alpha_median,
-
-
-        "baseline_error_64D":
-            baseline_error,
-
-        "calibrated_error_64D":
-            calibrated_error,
-
-        "calibrated_error_median_64D":
-            calibrated_error_median,
-
-
-        "absolute_improvement":
-            absolute_improvement,
-
-        "percent_improvement":
-            percent_improvement,
-
-
-        "calibration_helped":
-            calibrated_error
-            <
-            baseline_error,
-
-        "baseline_prediction_norm":
-            float(
-                np.linalg.norm(
-                    baseline_prediction
-                )
-            ),
-
-        "true_1B_norm":
-            float(
-                np.linalg.norm(
-                    true_1B
-                )
-            ),
-
-        "calibrated_prediction_norm":
-            float(
-                np.linalg.norm(
-                    calibrated_prediction
-                )
-            )
-
-    })
-
-
-    # ========================================================
-    # PRINT SUBJECT RESULT
-    # ========================================================
-
-    print(
-
-        f"Population alpha: "
-        f"{alpha_population:.6f}"
-
-    )
-
-    print(
-
-        f"Baseline error:   "
-        f"{baseline_error:.6f}"
-
-    )
-
-    print(
-
-        f"Calibrated error: "
-        f"{calibrated_error:.6f}"
-
-    )
-
-    print(
-
-        f"Improvement:      "
-        f"{percent_improvement:.2f}%"
-
-    )
-
-    print(
-
-        f"Calibration helped: "
-        f"{calibrated_error < baseline_error}"
-
-    )
-
-
-# ============================================================
-# RESULTS DATAFRAME
-# ============================================================
-
-results_df = pd.DataFrame(
-    results
-)
-
-
-results_df = (
-    results_df
-    .sort_values("Subject")
-    .reset_index(drop=True)
-)
-
-
-print(
-    "\n\n"
-    +
-    "=" * 70
-)
-
-print(
-    "STAGE 2 — CALIBRATION COMPARISON RESULTS"
-)
-
-print(
-    "=" * 70
-)
-
-
-print(
-    results_df.round(6).to_string(index=False)
-)
-
-
-# ============================================================
-# SUMMARY
-# ============================================================
-
-n_subjects = len(
-    results_df
-)
-
-
-n_helped = int(
-
-    results_df[
-        "calibration_helped"
-    ].sum()
-
-)
-
-
-mean_baseline = float(
-
-    results_df[
-        "baseline_error_64D"
-    ].mean()
-
-)
-
-
-mean_calibrated = float(
-
-    results_df[
-        "calibrated_error_64D"
-    ].mean()
-
-)
-
-
-median_baseline = float(
-
-    results_df[
-        "baseline_error_64D"
-    ].median()
-
-)
-
-
-median_calibrated = float(
-
-    results_df[
-        "calibrated_error_64D"
-    ].median()
-
-)
-
-
-overall_improvement = (
-
-    (
-        mean_baseline
-        -
-        mean_calibrated
-    )
-
-    /
-
-    mean_baseline
-
-    * 100
-
-)
-
-
-print(
-    f"\nSubjects tested: "
-    f"{n_subjects}"
-)
-
-
-print(
-    f"\nCalibration improved prediction for: "
-    f"{n_helped} / {n_subjects} subjects"
-)
-
-
-print(
-    f"\nMean baseline error:   "
-    f"{mean_baseline:.6f}"
-)
-
-
-print(
-    f"Mean calibrated error: "
-    f"{mean_calibrated:.6f}"
-)
-
-
-print(
-    f"\nMedian baseline error:   "
-    f"{median_baseline:.6f}"
-)
-
-
-print(
-    f"Median calibrated error: "
-    f"{median_calibrated:.6f}"
-)
-
-
-print(
-    f"\nOverall mean error improvement: "
-    f"{overall_improvement:.2f}%"
-)
-
-
-# ============================================================
-# PAIRED STATISTICAL TEST
-# ============================================================
-
-try:
-
-    from scipy.stats import (
-        wilcoxon
-    )
-
-
-    stat, p_value = wilcoxon(
-
-        results_df[
-            "baseline_error_64D"
-        ],
-
-        results_df[
-            "calibrated_error_64D"
-        ],
-
-        alternative="greater"
-
-    )
-
-
-    print(
-        "\nWilcoxon signed-rank test"
-    )
-
-    print(
-        "H1: baseline error > calibrated error"
-    )
-
-    print(
-        f"Statistic: {stat:.6f}"
-    )
-
-    print(
-        f"p-value:   {p_value:.8f}"
-    )
-
-
-except Exception as e:
-
-    print(
-        f"\nCould not run Wilcoxon test: {e}"
-    )
-
-
-# ============================================================
-# SAVE
-# ============================================================
-
-results_df.to_csv(
-
-    OUTPUT_PATH,
-
-    index=False
-
-)
-
-
-print(
-    f"\nSaved results to:\n"
-    f"{OUTPUT_PATH}"
-)
+        predictions["frozen_geometric"] = frozen_prediction
+    
+        for method, prediction in predictions.items():
+            prediction = np.asarray(prediction, dtype=np.float64)
+            error = float(np.linalg.norm(prediction - true_1b))
+            alpha = projection_position(true_rest, prediction, true_2b) if method in {"midpoint", "frozen_geometric"} else np.nan
+            results.append({
+                "subject": test_subject,
+                "method": method,
+                "error_64D": error,
+                "prediction_alpha": float(alpha) if np.isfinite(alpha) else np.nan,
+                "population_alpha": alpha_population if method == "frozen_geometric" else np.nan,
+                "prediction_norm": float(np.linalg.norm(prediction)),
+                "true_1B_norm": float(np.linalg.norm(true_1b)),
+                "rest_norm": float(np.linalg.norm(true_rest)),
+                "two_back_norm": float(np.linalg.norm(true_2b)),
+                "checkpoint": checkpoint_path,
+            })
+            print(f"{method:20s} | 64-D error = {error:.6f}")
+    
+    stage2 = pd.DataFrame(results).sort_values(["subject", "method"]).reset_index(drop=True)
+    stage2.to_csv(OUTPUT_PATH, index=False)
+    
+    summary = stage2.groupby("method")["error_64D"].agg(mean="mean", std="std", median="median", count="count").reindex(METHODS)
+    print("\n" + "=" * 70)
+    print("STAGE 2 — 64-D METHOD SUMMARY")
+    print("=" * 70)
+    print(summary.round(6).to_string())
+    
+    baseline = stage2[stage2["method"] == "population_only"][["subject", "error_64D"]].rename(columns={"error_64D": "population_error_64D"})
+    comparison = stage2.merge(baseline, on="subject", how="left")
+    comparison["absolute_improvement"] = comparison["population_error_64D"] - comparison["error_64D"]
+    comparison["percent_improvement"] = np.where(comparison["population_error_64D"] > 1e-12, 100.0 * comparison["absolute_improvement"] / comparison["population_error_64D"], np.nan)
+    comparison["improved_over_population"] = comparison["error_64D"] < comparison["population_error_64D"]
+    
+    print("\n" + "=" * 70)
+    print("COMPARISON AGAINST POPULATION-ONLY")
+    print("=" * 70)
+    print(comparison[["subject", "method", "error_64D", "population_error_64D", "absolute_improvement", "percent_improvement", "improved_over_population"]].sort_values(["subject", "method"]).round(6).to_string(index=False))
+    
+    test_rows = []
+    for method in METHODS[1:]:
+        base = stage2[stage2["method"] == "population_only"].sort_values("subject")
+        current = stage2[stage2["method"] == method].sort_values("subject")
+        base_err = base["error_64D"].to_numpy()
+        method_err = current["error_64D"].to_numpy()
+        w_stat, w_p = wilcoxon(base_err, method_err, alternative="greater")
+        t_stat, t_p = ttest_rel(base_err, method_err)
+        diffs = base_err - method_err
+        sd_diff = float(np.std(diffs, ddof=1))
+        test_rows.append({
+            "method": method,
+            "wilcoxon_W": float(w_stat),
+            "wilcoxon_p": float(w_p),
+            "paired_t_t": float(t_stat),
+            "paired_t_p": float(t_p),
+            "mean_error_reduction": float(np.mean(diffs)),
+            "cohen_dz": float(np.mean(diffs) / sd_diff) if sd_diff > 1e-12 else np.nan,
+            "n_improved": int(np.sum(method_err < base_err)),
+            "n_subjects": len(base_err),
+        })
+    
+    tests = pd.DataFrame(test_rows)
+    order = np.argsort(tests["wilcoxon_p"].to_numpy())
+    adjusted = np.empty(len(tests))
+    running = 0.0
+    for rank, idx in enumerate(order):
+        value = min(1.0, (len(tests) - rank) * tests.loc[idx, "wilcoxon_p"])
+        running = max(running, value)
+        adjusted[idx] = running
+    tests["wilcoxon_p_holm"] = adjusted
+    
+    print("\n" + "=" * 70)
+    print("PAIRED STATISTICAL TESTS VS POPULATION-ONLY")
+    print("=" * 70)
+    print(tests.round(8).to_string(index=False))
+    
+    tests.to_csv(OUTPUT_PATH.replace(".csv", "_paired_tests.csv"), index=False)
+    print(f"\nSaved results to: {OUTPUT_PATH}")
+    print(f"Saved paired tests to: {OUTPUT_PATH.replace('.csv', '_paired_tests.csv')}")
+if __name__ == "__main__":
+    main()

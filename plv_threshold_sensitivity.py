@@ -265,22 +265,18 @@ def load_fold_model(held_out_subject):
 # ---------------------------------------------------------------------------
 
 def build_subject_trajectory(z, y):
-    """Build the normalized 0B -> 1B -> 2B centroid trajectory."""
+    """Build the raw 0B -> 1B -> 2B centroid trajectory, matching Stage-1."""
     trajectory = []
-
     for label in TASK_LABELS:
         mask = y == label
         if mask.sum() == 0:
             raise RuntimeError(f"No samples for label {label}.")
         trajectory.append(z[mask].mean(axis=0))
-
     trajectory = np.stack(trajectory)
-
     d02 = np.linalg.norm(trajectory[2] - trajectory[0])
     if d02 < 1e-12:
         raise RuntimeError("0→2 displacement is too small.")
-
-    return trajectory / d02, None, d02
+    return trajectory, None, d02
 
 
 def trajectory_position(point, trajectory):
