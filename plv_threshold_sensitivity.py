@@ -296,7 +296,7 @@ def trajectory_position(point, trajectory):
 
 
 def trajectory_geometry(trajectory):
-    """Compute trajectory distances, angle, and path efficiency."""
+    """Compute trajectory distances, direction angle, and path efficiency."""
     C0, C1, C2 = trajectory
 
     d01 = np.linalg.norm(C1 - C0)
@@ -306,8 +306,15 @@ def trajectory_geometry(trajectory):
     if d01 < 1e-12 or d12 < 1e-12:
         angle = np.nan
     else:
-        cosine = np.dot(C0 - C1, C2 - C1) / (d01 * d12)
-        angle = np.degrees(np.arccos(np.clip(cosine, -1.0, 1.0)))
+        # Angle between the two trajectory directions:
+        # C0 -> C1 and C1 -> C2
+        v01 = C1 - C0
+        v12 = C2 - C1
+
+        cosine = np.dot(v01, v12) / (d01 * d12)
+        angle = np.degrees(
+            np.arccos(np.clip(cosine, -1.0, 1.0))
+        )
 
     efficiency = (
         d02 / (d01 + d12)
@@ -316,7 +323,6 @@ def trajectory_geometry(trajectory):
     )
 
     return d01, d12, d02, angle, efficiency
-
 
 # ---------------------------------------------------------------------------
 # Main threshold evaluator
