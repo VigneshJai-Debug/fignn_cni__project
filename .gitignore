@@ -66,8 +66,7 @@ lightning_logs/
 *.xdv
 
 # Generated compiled manuscript PDFs — keep figure PDFs.
-paper/main.pdf
-paper_clean/main.pdf
+paper_clean/*
 
 # ── OS Junk ──────────────────────────────────────────────────────────
 .DS_Store
