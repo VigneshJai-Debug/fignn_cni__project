@@ -49,27 +49,17 @@ from pytorch_metric_learning.losses import SupConLoss
 # PATHS
 # =============================================================================
 
-PROJECT_ROOT = "/home/nvidia/24BCE1793/fignn_cni__project"
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT))
 
 DATA_PATH = (
-    "/lp-dev/24BCE1793/data/processed/"
-    "all_graphs_29sub.pkl"
+    PROJECT_ROOT / "data" / "data" / "processed" / "all_graphs_29sub.pkl"
 )
 
-OUTPUT_DIR = (
-    "/lp-dev/24BCE1793/outputs/"
-    "ablation_logs"
-)
-
-os.makedirs(
-    OUTPUT_DIR,
-    exist_ok=True
-)
-
-sys.path.insert(
-    0,
-    PROJECT_ROOT
-)
+OUTPUT_DIR = PROJECT_ROOT / "data" / "data" / "outputs" / "ablation_logs"
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 os.chdir(PROJECT_ROOT)
 

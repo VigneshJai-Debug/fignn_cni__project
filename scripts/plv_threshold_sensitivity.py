@@ -33,18 +33,21 @@ from scipy.spatial import procrustes
 from torch_geometric.data import Data
 from torch_geometric.loader import DataLoader
 
-from src.models.model import FIGNNEncoder
-
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 
-PROJECT_ROOT = Path("/home/nvidia/24BCE1793/fignn_cni__project")
-DATA_ROOT = Path("/lp-dev/24BCE1793/data")
-OUTPUT_ROOT = Path("/lp-dev/24BCE1793/outputs")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DATA_ROOT = PROJECT_ROOT / "data" / "data"
+OUTPUT_ROOT = PROJECT_ROOT / "data" / "data" /"outputs"
 
-PRE_GRAPH_PATH = DATA_ROOT / "processed" / "pre_graph_data_current.pkl"
+PRE_GRAPH_PATH = (
+    DATA_ROOT
+    / "processed"
+    / "pre_graph_data_reconstructed.pkl"
+)
+
 LOSO_ROOT = OUTPUT_ROOT / "loso"
 OUTPUT_DIR = OUTPUT_ROOT / "plv_threshold_sensitivity"
 
@@ -59,6 +62,18 @@ BATCH_SIZE = 128
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+import sys
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from src.models.model import FIGNNEncoder
 
 
 # ---------------------------------------------------------------------------

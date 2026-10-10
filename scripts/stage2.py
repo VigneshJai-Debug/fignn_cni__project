@@ -19,12 +19,21 @@ import torch
 from scipy.stats import wilcoxon, ttest_rel
 from torch_geometric.loader import DataLoader
 
-PROJECT_ROOT = "/home/nvidia/24BCE1793/fignn_cni__project"
-GRAPHS_PATH = "/lp-dev/24BCE1793/data/processed/all_graphs_29sub.pkl"
-LOSO_ROOT = "/lp-dev/24BCE1793/outputs/loso"
-OUTPUT_PATH = "/lp-dev/24BCE1793/outputs/stage2_calibration_comparison_64D.csv"
+from pathlib import Path
 
-sys.path.insert(0, PROJECT_ROOT)
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+GRAPHS_PATH = (
+    PROJECT_ROOT / "data" / "data" / "processed" / "all_graphs_29sub.pkl"
+)
+LOSO_ROOT = PROJECT_ROOT / "data" / "outputs" / "loso"
+
+OUTPUT_PATH = (
+    PROJECT_ROOT / "data" / "outputs" / "stage2_calibration_comparison_64D.csv"
+)
+
+sys.path.insert(0, str(PROJECT_ROOT))
+
 from src.models.model import FIGNNEncoder
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")

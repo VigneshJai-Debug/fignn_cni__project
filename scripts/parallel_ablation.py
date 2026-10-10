@@ -2,15 +2,13 @@ import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 
-PROJECT_ROOT = "/home/nvidia/24BCE1793/fignn_cni__project"
-OUTPUT_DIR = "/lp-dev/24BCE1793/outputs/ablation_logs"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+OUTPUT_DIR = PROJECT_ROOT / "data" / "data" / "outputs" / "ablation_logs"
 
-os.makedirs(
-    OUTPUT_DIR,
-    exist_ok=True,
-)
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # ============================================================

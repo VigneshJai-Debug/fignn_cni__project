@@ -2,17 +2,22 @@ import os
 import pickle
 import numpy as np
 import sys
+from pathlib import Path
 
-sys.path.insert(0, "/home/nvidia/24BCE1793/fignn_cni__project")
-os.chdir("/home/nvidia/24BCE1793/fignn_cni__project")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT))
+
+DATA_ROOT = PROJECT_ROOT / "data" / "raw"
+OUTPUT = (
+    PROJECT_ROOT
+    / "data"
+    / "processed"
+    / "pre_graph_data_reconstructed.pkl"
+)
 
 from src.preprocessing.preprocess import process_file
 from src.preprocessing.plv import batch_compute_plv
 from src.preprocessing.graph_builder import compute_band_power
-
-
-DATA_ROOT = "/lp-dev/24BCE1793/data/raw"
-OUTPUT = "/lp-dev/24BCE1793/data/processed/pre_graph_data_reconstructed.pkl"
 
 BANDS = ["delta", "theta", "alpha", "beta"]
 

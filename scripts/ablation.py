@@ -32,9 +32,17 @@ from torch_geometric.loader import DataLoader
 from torch.utils.data import WeightedRandomSampler
 from pytorch_metric_learning.losses import SupConLoss
 
-PROJECT_DIR = "/home/nvidia/24BCE1793/fignn_cni__project"
-DATA_PATH = "/lp-dev/24BCE1793/data/processed/all_graphs_29sub.pkl"
-SAVE_ROOT = "/lp-dev/24BCE1793/outputs/ablation_64_4_32"
+from pathlib import Path
+
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_DIR))
+
+DATA_PATH = (
+    PROJECT_DIR / "data" / "data" / "processed" / "all_graphs_29sub.pkl"
+)
+
+SAVE_ROOT = PROJECT_DIR /"data" /"data" /"outputs" / "ablation_64_4_32"
+SAVE_ROOT.mkdir(parents=True, exist_ok=True)
 
 ABLATION_SUBJECTS = list(range(1, 30))
 N_EPOCHS = 500
@@ -224,8 +232,6 @@ def run_ablation_training(train_graphs, test_graphs, save_dir, seed=SEED):
 
 def run_fold(subject, gpu):
     os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu)
-    sys.path.insert(0, PROJECT_DIR)
-    os.chdir(PROJECT_DIR)
     set_seed(SEED)
 
     print("\n" + "=" * 70, flush=True)

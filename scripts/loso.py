@@ -2,13 +2,17 @@ import os
 import sys
 import pickle
 import subprocess
+from pathlib import Path
 
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_DIR))
 
-PROJECT_DIR = "/home/nvidia/24BCE1793/fignn_cni__project"
-DATA_PATH = "/lp-dev/24BCE1793/data/processed/all_graphs_29sub.pkl"
-SAVE_ROOT = "/lp-dev/24BCE1793/outputs/loso"
+DATA_PATH = (
+    PROJECT_DIR / "data" / "data" / "processed" / "all_graphs_29sub.pkl"
+)
+SAVE_ROOT = PROJECT_DIR / "data" / "data" / "outputs" / "loso"
 
-GPUS = [1, 2, 5, 6]
+GPUS = [1, 2, 5, 6] # Set it to the GPU IDs available on the machine where you run the experiment. If you have only one GPU, use [0]
 SUBJECTS = list(range(1, 30))
 
 N_EPOCHS = 500
@@ -16,7 +20,7 @@ BATCH_SIZE = 128
 VAL_SPLIT = 0.15
 SEED = 42
 
-os.makedirs(SAVE_ROOT, exist_ok=True)
+SAVE_ROOT.mkdir(parents=True, exist_ok=True)
 
 
 def run_fold(subject, gpu):

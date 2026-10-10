@@ -17,16 +17,21 @@ import torch
 # Project paths
 # -------------------------------------------------------------------------
 
-PROJECT_ROOT = "/home/nvidia/24BCE1793/fignn_cni__project"
-DATA_PATH = "/lp-dev/24BCE1793/data/processed/all_graphs_29sub.pkl"
+from pathlib import Path
 
-CHECKPOINT_DIR = "/lp-dev/24BCE1793/outputs/checkpoints_full"
-PLOT_DIR = "/lp-dev/24BCE1793/outputs/plots_full"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT))
 
-os.makedirs(CHECKPOINT_DIR, exist_ok=True)
-os.makedirs(PLOT_DIR, exist_ok=True)
+DATA_PATH = (
+    PROJECT_ROOT / "data" / "data" / "processed" / "all_graphs_29sub.pkl"
+)
 
-sys.path.insert(0, PROJECT_ROOT)
+CHECKPOINT_DIR = PROJECT_ROOT / "data" / "data" / "outputs" / "checkpoints_full"
+PLOT_DIR = PROJECT_ROOT / "data" / "data" / "outputs" / "plots_full"
+
+CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
+PLOT_DIR.mkdir(parents=True, exist_ok=True)
+
 os.chdir(PROJECT_ROOT)
 
 # -------------------------------------------------------------------------

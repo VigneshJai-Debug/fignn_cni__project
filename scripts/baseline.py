@@ -45,7 +45,7 @@ the existing PLV-mean > 0.5 construction.
 
 Outputs
 -------
-/lp-dev/24BCE1793/outputs/baseline_benchmark_4fold/
+fignn_cni__project/data/outputs/baseline_benchmark_4fold
     subject_07/
         gcn/
         gat/
@@ -84,12 +84,12 @@ from pytorch_metric_learning.losses import SupConLoss
 # CONFIG
 # ============================================================================
 
-PROJECT_ROOT = "/home/nvidia/24BCE1793/fignn_cni__project"
-DATA_PATH = "/lp-dev/24BCE1793/data/processed/all_graphs_29sub.pkl"
-
-OUTPUT_ROOT = Path(
-    "/lp-dev/24BCE1793/outputs/baseline_benchmark_4fold"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DATA_PATH = (
+    PROJECT_ROOT / "data" / "data" / "processed" / "all_graphs_29sub.pkl"
 )
+
+OUTPUT_ROOT = PROJECT_ROOT / "data" / "data" / "outputs" / "baseline_benchmark_4fold"
 
 TEST_SUBJECTS = [7, 15, 22, 29]
 BASELINES = ["gcn", "gat"]
@@ -116,8 +116,8 @@ NUM_WORKERS = 2
 
 OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
 
-if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 os.chdir(PROJECT_ROOT)
 
@@ -1061,9 +1061,11 @@ def merge_existing_fignn(summary_df):
     If the existing controlled ablation summary is available, pull its
     'full' row into a comparison table. No FIGNN result is recomputed here.
     """
-    source = Path(
-        "/lp-dev/24BCE1793/outputs/ablation_logs/"
-        "ablation_geometry_summary_4fold.csv"
+    source = (
+        PROJECT_ROOT
+        / "outputs"
+        / "ablation_logs"
+        / "ablation_geometry_summary_4fold.csv"
     )
 
     if not source.exists():
