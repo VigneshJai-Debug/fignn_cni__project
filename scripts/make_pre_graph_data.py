@@ -7,9 +7,10 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-DATA_ROOT = PROJECT_ROOT / "data" / "raw"
+DATA_ROOT = PROJECT_ROOT / "data"/ "data" / "raw"
 OUTPUT = (
     PROJECT_ROOT
+    / "data"
     / "data"
     / "processed"
     / "pre_graph_data_reconstructed.pkl"

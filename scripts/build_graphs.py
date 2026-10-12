@@ -6,8 +6,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-DATA_ROOT = PROJECT_ROOT / "data" / "raw"
-PROCESSED_ROOT = PROJECT_ROOT / "data" / "processed"
+DATA_ROOT = PROJECT_ROOT / "data"/ "data" / "raw"
+PROCESSED_ROOT = PROJECT_ROOT / "data" / "data" / "processed"
 PROCESSED_ROOT.mkdir(parents=True, exist_ok=True)
 
 from src.preprocessing.preprocess import process_file

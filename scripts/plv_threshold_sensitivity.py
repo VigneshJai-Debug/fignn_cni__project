@@ -40,12 +40,12 @@ from torch_geometric.loader import DataLoader
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATA_ROOT = PROJECT_ROOT / "data" / "data"
-OUTPUT_ROOT = PROJECT_ROOT / "data" / "data" /"outputs"
+OUTPUT_ROOT = PROJECT_ROOT / "data" /"outputs"
 
 PRE_GRAPH_PATH = (
     DATA_ROOT
     / "processed"
-    / "pre_graph_data_reconstructed.pkl"
+    / "pre_graph_data_current.pkl"
 )
 
 LOSO_ROOT = OUTPUT_ROOT / "loso"
